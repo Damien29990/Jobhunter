@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', 'Zen Maru Gothic', system-ui, sans-serif;
+  /* Subtle CRT scanline overlay for the retro vibe */
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.0) 0px,
+      rgba(0, 0, 0, 0.0) 2px,
+      rgba(0, 0, 0, 0.18) 3px,
+      rgba(0, 0, 0, 0.0) 4px
+    );
+  background-size: 100% 4px;
+}
+
+/* Pixel-perfect rendering for SVG/CSS pixel art */
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  shape-rendering: crispEdges;
+}
+
+/* Retro panel chrome */
+.panel {
+  background: #0b1120;
+  border: 2px solid #1e293b;
+  box-shadow: 4px 4px 0 0 #000;
+}
+
+.panel-inset {
+  background: #0f172a;
+  border: 2px solid #0b1120;
+  box-shadow: inset 2px 2px 0 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Pixel-style scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0b1120;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border: 2px solid #0b1120;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Speech bubble tail */
+.bubble-tail::after {
+  content: '';
+  position: absolute;
+  bottom: -10px;
+  left: 28px;
+  width: 0;
+  height: 0;
+  border: 10px solid transparent;
+  border-top-color: #0f172a;
+  border-bottom: 0;
+}
+
+/* Kanban column scroll */
+.kanban-scroll {
+  scrollbar-width: thin;
+}
+
+/* Japanese-style font for Traditional Chinese (zh-HK locale).
+   Zen Maru Gothic is a rounded Japanese gothic that covers TC glyphs.
+   Inter lacks CJK glyphs, so TC characters fall through to this font.
+   The :lang selector ensures the Japanese font takes precedence when
+   the document language is zh-HK, even for elements that inherit a
+   CJK-capable font. */
+:lang(zh-HK) {
+  font-family: 'Zen Maru Gothic', 'Inter', system-ui, sans-serif;
+}
+:lang(zh-HK) .font-pixel {
+  font-family: 'Zen Maru Gothic', '"Press Start 2P"', cursive, monospace;
+}
+:lang(zh-HK) .font-mono {
+  font-family: 'Zen Maru Gothic', '"Silkscreen"', monospace;
+}
+
+/* Explicit Japanese-style font utility class */
+.font-jp {
+  font-family: 'Zen Maru Gothic', 'Inter', system-ui, sans-serif;
+}
+
+.shelf-overlay {
+  background: rgba(2, 6, 23, 0.72);
+}
+.shelf-panel {
+  box-shadow: 8px 8px 0 0 #000;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shelf-overlay {
+    animation: shelf-fade 180ms ease-out;
+  }
+  .shelf-panel {
+    animation: shelf-rise 220ms ease-out;
+  }
+}
+@keyframes shelf-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes shelf-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shelf-overlay,
+  .shelf-panel {
+    animation: none;
+  }
+}

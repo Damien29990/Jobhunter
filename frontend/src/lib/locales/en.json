@@ -1,0 +1,386 @@
+{
+  "app": {
+    "title": "JOBHUNTER",
+    "subtitle": "Pixel Office Dashboard · HK IT pipeline",
+    "footer": "Jobhunter Pixel Office · dashboard observes job_agent.db (read-only) · agents own writes"
+  },
+  "nav": {
+    "overview": "Overview",
+    "jobs": "Jobs",
+    "companies": "Companies",
+    "runs": "Runs"
+  },
+  "kpi": {
+    "found": "FOUND",
+    "scoreGe80": "SCORE≥80",
+    "proceed": "PROCEED",
+    "cvs": "CVs",
+    "ready": "READY"
+  },
+  "candidate": {
+    "label": "CANDIDATE",
+    "default": "DEFAULT",
+    "none": "no profiles found — using master_profile.json",
+    "addHint": "add config/profiles/{id}.json for more candidates"
+  },
+  "office": {
+    "title": "Pixel Office",
+    "live": "live · polling 2.5s",
+    "clickToTalk": "click to talk",
+    "awaiting": "awaiting orders…",
+    "tokens": "{{total}} tokens ({{prompt}} in / {{completion}} out)",
+    "states": {
+      "IDLE": "IDLE",
+      "WORKING": "WORKING",
+      "FAILED": "FAILED"
+    }
+  },
+  "quest": {
+    "title": "Office Manager Quest",
+    "subtitle": "pipeline checklist",
+    "step": "STEP",
+    "run": "run ▶",
+    "rerun": "re-run",
+    "running": "running…",
+    "steps": {
+      "milo": "Calibrate career lens with Milo",
+      "rex": "Scan cross-domain roles with Rex",
+      "dana": "Vet top prospects with Dana",
+      "leo": "Generate tailored Typst CVs with Leo",
+      "clara": "Audit submission portals with Clara"
+    }
+  },
+  "kanban": {
+    "title": "Pipeline Kanban",
+    "loading": "loading…",
+    "jobs": "jobs",
+    "empty": "empty",
+    "columns": {
+      "discovered": "Discovered",
+      "discoveredHint": "score ≥ 75 / transfer ≥ 85",
+      "vetting": "Vetting",
+      "vettingHint": "research in progress",
+      "vetted": "Vetted",
+      "vettedHint": "PROCEED / AVOID",
+      "materials": "Materials Ready",
+      "materialsHint": "CV compiled",
+      "applied": "Applied / Archived",
+      "appliedHint": "checklist done"
+    }
+  },
+  "shelf": {
+    "button": "Held aside",
+    "openHint": "Low-score, expired, and unconsiderable jobs",
+    "title": "Jobs held aside",
+    "subtitle": "Composite score under 35, expired postings, and jobs you marked unconsiderable. They stay in the database so agents can still retrieve them.",
+    "close": "Close",
+    "loading": "loading…",
+    "empty": "none in this group",
+    "lowScore": "Low score",
+    "lowScoreHint": "Composite below 35",
+    "expired": "Expired",
+    "expiredHint": "You marked the posting expired",
+    "unconsiderable": "Unconsiderable",
+    "unconsiderableHint": "You said these are not for you"
+  },
+  "research": {
+    "title": "Employer research",
+    "subtitle": "Dana background briefs (Agent 2)",
+    "loading": "loading…",
+    "empty": "No dossiers yet — run Dana on scored jobs.",
+    "count": "{{n}} dossiers",
+    "filterAll": "All",
+    "company": "Company",
+    "verdict": "Verdict",
+    "confidence": "Confidence",
+    "updated": "Updated",
+    "jobs": "Linked jobs",
+    "salary": "Salary benchmark",
+    "tradeoffs": "Architectural trade-offs",
+    "sources": "Sources",
+    "linkedJobs": "Jobs at this employer",
+    "previewReport": "Full markdown brief",
+    "openTab": "Open Dana's research brief",
+    "teaserTitle": "BACKGROUND RESEARCH",
+    "pending": "Pending"
+  },
+  "job": {
+    "confidential": "Confidential",
+    "matched": "MATCHED",
+    "gaps": "GAPS",
+    "transferable": "TRANSFERABLE STRENGTHS",
+    "advisory": "CAREER ADVISORY",
+    "jdSnippet": "JD SNIPPET",
+    "openPosting": "Open original posting",
+    "posted": "Posted (Hong Kong time)",
+    "status": "Status",
+    "active": "Active",
+    "expired": "EXPIRED",
+    "check": "Check exists",
+    "checkExists": "Source link OK",
+    "checkMissing": "Source link not found",
+    "checkMismatch": "Link is not this job",
+    "expire": "Expire",
+    "reactivate": "Reactivate",
+    "expireSuggested": "Mark as expired",
+    "unconsiderable": "UNCONSIDERABLE",
+    "markUnconsiderable": "Not for me",
+    "considerAgain": "Consider again",
+    "unconsiderableHint": "Hide from your board. Agents can still retrieve this job.",
+    "empty": {
+      "all": "— select a job —",
+      "dana": "No pending vetting — run Rex first",
+      "leo": "No PROCEED-vetted jobs — run Dana first",
+      "clara": "No CV-ready jobs — run Leo first"
+    },
+    "badges": {
+      "proceed": "PROCEED",
+      "avoid": "AVOID",
+      "cv": "CV",
+      "typ": "TYP",
+      "fail": "FAIL",
+      "ready": "READY"
+    }
+  },
+  "detail": {
+    "title": "Job Detail",
+    "tabs": {
+      "overview": "Overview",
+      "dossier": "Dossier",
+      "pack": "Application Pack",
+      "cv": "CV Previewer"
+    },
+    "created": "created",
+    "jobNotFound": "job not found",
+    "loading": "loading…",
+    "noDossier": "No dossier yet — run Dana to investigate this employer.",
+    "noChecklist": "No application checklist — run Clara after Leo produces a CV.",
+    "noCv": "No CV yet — run Leo after Dana marks the employer PROCEED.",
+    "cvReady": "CV.pdf ready",
+    "cvTypOnly": "CV.typ only",
+    "openCvNewTab": "Open in new tab",
+    "downloadCv": "Download CV",
+    "appReady": "Application Ready",
+    "sections": {
+      "techStack": "TECH STACK",
+      "culture": "ENGINEERING CULTURE",
+      "sentiment": "GLASSDOOR SENTIMENT",
+      "news": "RECENT NEWS",
+      "greenFlags": "GREEN FLAGS",
+      "redFlags": "RED FLAGS",
+      "reverseQs": "REVERSE INTERVIEW Qs",
+      "openDossier": "Open full dossier (Markdown)"
+    },
+    "none": "none",
+    "hardSkill": "Hard skill",
+    "transfer": "Transfer",
+    "composite": "Composite",
+    "weighting": "weighted 55% hard / 45% transfer",
+    "stage": {
+      "title": "Rework this job",
+      "run": "Run",
+      "rerun": "Re-run",
+      "stop": "Stop",
+      "runNamed": "Run {{name}}",
+      "rerunNamed": "Re-run {{name}}",
+      "stopNamed": "Stop {{name}}",
+      "failed": "failed to start",
+      "danaTitle": "Dana — employer dossier",
+      "leoTitle": "Leo — CV previewer",
+      "claraTitle": "Clara — application pack",
+      "hintDana": "Dana usually needs composite ≥ {{n}}. The agent may skip this job.",
+      "hintLeo": "Leo usually needs a {{verdict}} verdict. The agent may skip this job.",
+      "hintClara": "Clara usually needs a generated CV. The agent may skip this job."
+    }
+  },
+  "tutorial": {
+    "purpose": "PURPOSE",
+    "howTo": "HOW TO USE",
+    "run": "RUN",
+    "stop": "STOP",
+    "running": "RUNNING…",
+    "started": "✓ started (pid {{pid}})",
+    "failed": "failed to start",
+    "fields": {
+      "query": "Extra keywords",
+      "minScore": "Min composite score",
+      "company": "Company (substring)",
+      "jobId": "Job id",
+      "forceRefresh": "Force refresh",
+      "minMatchScore": "Min match score",
+      "cvFile": "Upload CV (text or .txt/.json/.md)",
+      "cvPath": "CV file path (optional)",
+      "canvasTemplate": "Canvas template (optional)"
+    },
+    "actions": {
+      "milo": "Run Milo to Calibrate Career Lens",
+      "rex": "Assign Search Track to Rex",
+      "dana": "Tell Dana to Vet Pending Companies",
+      "leo": "Generate Tailored Typst CVs with Leo",
+      "clara": "Audit Submission Portals with Clara"
+    }
+  },
+  "agents": {
+    "milo": {
+      "role": "Agent 0 — Exploratory Summarizer",
+      "bio": "Exploratory Summarizer. Imports your CV, chats about your career situation, extracts transferable skills and exploration spectrum to provide a lens for downstream agents.",
+      "purpose": "Does NOT hard-filter. Expands Rex's search horizon by extracting your core capabilities and exploration directions into a candidate narrative.",
+      "howTo": [
+        "Optionally upload a CV (text or PDF path).",
+        "Chat with Milo to add career context (e.g. secondment, body rental).",
+        "Click Run Milo — he extracts PAC (exploration spectrum) and writes to your profile."
+      ]
+    },
+    "rex": {
+      "role": "Agent 1 — Talent Scout",
+      "bio": "Career Path Architect. Expands your career horizons across HK industries (PropTech, Critical Utilities, Logistics, FinTech), then crawls trusted job boards and ATS platforms with Tavily.",
+      "purpose": "Discovers cross-domain roles you would not search yourself, and scores them with a dual hard-skill / transferability matrix.",
+      "howTo": [
+        "Pick a candidate profile (top-right).",
+        "Optionally add extra search keywords in the quick action.",
+        "Set a minimum composite score (default 75, or transferability ≥ 85).",
+        "Click \"Run Rex\" — he will de-identify your profile, plan search tracks, and crawl trusted sources."
+      ]
+    },
+    "dana": {
+      "role": "Agent 2 — Due Diligence",
+      "bio": "Company investigator. Runs multi-lane Tavily research (news, sentiment, tech) and distills a CompanyDueDiligence report with a PROCEED / AVOID verdict.",
+      "purpose": "Tells you whether an employer is worth your time before you invest in a tailored CV.",
+      "howTo": [
+        "Rex must have found jobs first (composite match_score ≥ 80).",
+        "Optionally target one company or job id.",
+        "Tick \"Force refresh\" to re-research even if a dossier exists.",
+        "Click \"Run Dana\" — she writes a Markdown dossier to output/dossiers/."
+      ]
+    },
+    "leo": {
+      "role": "Agent 3 — CV Generator",
+      "bio": "Resume tailor. Rewrites your master profile to align with each JD (ground-truth only, STAR method), renders Typst via Jinja2, and compiles a PDF.",
+      "purpose": "Produces an ATS-aligned CV per job — but only for PROCEED-vetted, high-match roles.",
+      "howTo": [
+        "Dana must have marked the employer PROCEED.",
+        "The job needs match_score ≥ 80.",
+        "Optionally target one company or job id.",
+        "Optionally pick a Canvas template (classic, compact, technical) or leave blank to auto-pick.",
+        "Click \"Run Leo\" — he writes CV.typ + CV.pdf to output/{company}_{role}/."
+      ]
+    },
+    "clara": {
+      "role": "Agent 4 — Cert & Portal Auditor",
+      "bio": "Application readiness auditor. Matches your real credentials to the role, detects the application channel (Workday / Greenhouse / JobsDB / Direct Email), and exports a hand-in checklist.",
+      "purpose": "Bridges the gap between \"CV ready\" and \"actually submitted\" — the final human step.",
+      "howTo": [
+        "Leo must have produced a CV (cv_status = MATERIALS_GENERATED).",
+        "Optionally target one company or job id.",
+        "Click \"Run Clara\" — she stamps Application_Checklist.md and flips application_ready."
+      ]
+    }
+  },
+  "backend": {
+    "offlineTitle": "Backend offline",
+    "offlineMsg": "The FastAPI server is not running on :8000. Start it in another terminal:",
+    "offlineCmd": "conda activate jobhunter && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload",
+    "online": "Backend online"
+  },
+  "pipeline": {
+    "run": "Finish Pipeline",
+    "stop": "Stop Pipeline"
+  },
+  "logs": {
+    "title": "Agent Logs",
+    "subtitle": "live stdout · all agents",
+    "perAgent": "Per-Agent",
+    "unified": "Unified",
+    "empty": "No logs yet"
+  },
+  "suggestions": {
+    "notice": "💡 Suggestion tags are generated by a local AI model (Ollama gemma4:e2b) from your profile — nothing leaves your machine.",
+    "generate": "Generate Suggestions",
+    "loading": "Generating…",
+    "clickToFill": "Click a tag to fill the field",
+    "fallbackNote": "⚠️ Local model unavailable — using default suggestions",
+    "rexTitle": "Search Query Suggestions",
+    "danaTitle": "Target Employer Suggestions"
+  },
+  "skills": {
+    "suggest": "Suggest Skills",
+    "suggesting": "Generating…",
+    "suggestNotice": "💡 Generated by local AI model (Ollama gemma4:e2b) from your experience",
+    "fallbackNote": "⚠️ Local model unavailable",
+    "addToCategory": "Add to this category",
+    "refreshCategories": "Refresh from job platforms",
+    "refreshing": "Refreshing…",
+    "lastUpdated": "Last updated",
+    "pickCategory": "Pick a platform-referenced category…",
+    "orTypeCustom": "or type a custom category name"
+  },
+  "lang": {
+    "switch": "語言 / Language",
+    "en": "English",
+    "zhHK": "繁體中文"
+  },
+  "profile": {
+    "edit": "Edit Profile",
+    "newPerson": "New Person",
+    "create": "Create",
+    "save": "Save",
+    "loading": "Loading profile…",
+    "needIdName": "Please enter an id and a name.",
+    "idHint": "id is the filename stem (e.g. damien → config/profiles/damien.json). Letters, digits, - or _ only.",
+    "selectJob": "— select a job —",
+    "newCategory": "new category",
+    "tabs": {
+      "basics": "Basics",
+      "education": "Education",
+      "skills": "Skills",
+      "experience": "Experience",
+      "projects": "Projects",
+      "certs": "Certifications"
+    },
+    "fields": {
+      "id": "Profile id",
+      "name": "Name",
+      "location": "Location",
+      "minSalary": "Min expected salary (HKD)",
+      "targetRoles": "Target roles",
+      "languages": "Languages",
+      "institution": "Institution",
+      "degree": "Degree",
+      "year": "Year",
+      "company": "Company",
+      "role": "Role",
+      "period": "Period",
+      "highlights": "Highlights (one per line)",
+      "skillsUsed": "Skills used",
+      "description": "Description",
+      "techStack": "Tech stack",
+      "issuer": "Issuer",
+      "category": "Category"
+    },
+    "addEducation": "Add education",
+    "addExperience": "Add experience",
+    "addProject": "Add project",
+    "addCert": "Add certification"
+  },
+  "milo": {
+    "title": "Milo",
+    "talk": "Talk to Milo",
+    "you": "You",
+    "placeholder": "Ask Milo about your career…",
+    "empty": "No conversation yet — attach a CV or say hi.",
+    "loadingHistory": "Loading history…",
+    "historyError": "History unavailable until the DB migration is run.",
+    "parsing": "Parsing CV with Ollama…",
+    "imported": "✓ CV imported — profile updated",
+    "pdfNote": "PDF, TXT, MD, JSON, or DOCX.",
+    "attach": "Attach file",
+    "attachHint": "PDF / TXT / MD / JSON / DOCX · max 5MB · up to 3 files",
+    "removeFile": "Remove",
+    "tooLarge": "{{name}} exceeds 5MB",
+    "maxFiles": "Up to 3 files per message"
+  },
+  "telegram": {
+    "find": "Telegram",
+    "open": "Open Telegram bot {{handle}} (id {{id}})"
+  }
+}

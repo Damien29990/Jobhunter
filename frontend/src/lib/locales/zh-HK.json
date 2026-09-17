@@ -1,0 +1,387 @@
+{
+  "app": {
+    "title": "JOBHUNTER",
+    "subtitle": "像素辦公室儀表板 · 香港 IT 管線",
+    "footer": "Jobhunter 像素辦公室 · 儀表板唯讀存取 job_agent.db · 代理擁有寫入"
+  },
+  "nav": {
+    "overview": "總覽",
+    "jobs": "職缺",
+    "companies": "公司",
+    "runs": "執行"
+  },
+  "kpi": {
+    "found": "已發現",
+    "scoreGe80": "分數≥80",
+    "proceed": "放行",
+    "cvs": "履歷",
+    "ready": "可申請"
+  },
+  "candidate": {
+    "label": "候選人",
+    "default": "預設",
+    "none": "找不到設定檔 — 使用 master_profile.json",
+    "addHint": "新增 config/profiles/{id}.json 以加入更多候選人"
+  },
+  "office": {
+    "title": "像素辦公室",
+    "live": "即時 · 每 2.5 秒輪詢",
+    "clickToTalk": "點擊對話",
+    "awaiting": "等待指令…",
+    "tokens": "{{total}} tokens（{{prompt}} 輸入 / {{completion}} 輸出）",
+    "states": {
+      "IDLE": "閒置",
+      "WORKING": "工作中",
+      "FAILED": "失敗"
+    }
+  },
+  "quest": {
+    "title": "辦公室主管任務",
+    "subtitle": "管線清單",
+    "step": "步驟",
+    "run": "執行 ▶",
+    "rerun": "重跑",
+    "stop": "停止 ■",
+    "running": "執行中…",
+    "steps": {
+      "milo": "用 Milo 校準職涯視角",
+      "rex": "用 Rex 掃描跨領域職缺",
+      "dana": "用 Dana 背調頂尖機會",
+      "leo": "用 Leo 生成量身 Typst 履歷",
+      "clara": "用 Clara 審核申請入口"
+    }
+  },
+  "kanban": {
+    "title": "管線看板",
+    "loading": "載入中…",
+    "jobs": "個職缺",
+    "empty": "空",
+    "columns": {
+      "discovered": "已發現",
+      "discoveredHint": "分數 ≥ 75 / 可遷移 ≥ 85",
+      "vetting": "背調中",
+      "vettingHint": "研究中",
+      "vetted": "已背調",
+      "vettedHint": "放行 / 避免",
+      "materials": "材料就緒",
+      "materialsHint": "履歷已編譯",
+      "applied": "已申請 / 封存",
+      "appliedHint": "清單已完成"
+    }
+  },
+  "shelf": {
+    "button": "暫擱職缺",
+    "openHint": "低分、已過期、以及不予考慮的職缺",
+    "title": "暫擱職缺",
+    "subtitle": "綜合分低於 35、已過期，以及你標記為不予考慮的職缺。資料仍留在資料庫，代理人仍可讀取。",
+    "close": "關閉",
+    "loading": "載入中…",
+    "empty": "此組沒有職缺",
+    "lowScore": "低分",
+    "lowScoreHint": "綜合分低於 35",
+    "expired": "已過期",
+    "expiredHint": "你標記此職缺已過期",
+    "unconsiderable": "不予考慮",
+    "unconsiderableHint": "你認為這些職位不適合自己"
+  },
+  "research": {
+    "title": "雇主背調",
+    "subtitle": "Dana 背景調查簡報（代理 2）",
+    "loading": "載入中…",
+    "empty": "尚無背調報告 — 請對已評分職缺執行 Dana。",
+    "count": "{{n}} 份報告",
+    "filterAll": "全部",
+    "company": "公司",
+    "verdict": "結論",
+    "confidence": "信心",
+    "updated": "更新",
+    "jobs": "關聯職缺",
+    "salary": "薪酬基準",
+    "tradeoffs": "架構取捨",
+    "sources": "來源",
+    "linkedJobs": "此雇主的職缺",
+    "previewReport": "完整 Markdown 簡報",
+    "openTab": "開啟 Dana 背調簡報",
+    "teaserTitle": "背景調查",
+    "pending": "待定"
+  },
+  "job": {
+    "confidential": "保密",
+    "matched": "已匹配",
+    "gaps": "缺口",
+    "transferable": "可遷移優勢",
+    "advisory": "職涯建議",
+    "jdSnippet": "JD 摘要",
+    "openPosting": "開啟原始職缺",
+    "posted": "發佈（香港時間）",
+    "status": "狀態",
+    "active": "有效",
+    "expired": "已過期",
+    "check": "檢查連結",
+    "checkExists": "來源連結正常",
+    "checkMissing": "找不到來源連結",
+    "checkMismatch": "連結對不到此職缺",
+    "expire": "標記過期",
+    "reactivate": "重新啟用",
+    "expireSuggested": "標記為過期",
+    "unconsiderable": "不予考慮",
+    "markUnconsiderable": "對我不合適",
+    "considerAgain": "重新考慮",
+    "unconsiderableHint": "從看板隱藏。代理人仍可從資料庫讀取此職缺。",
+    "empty": {
+      "all": "— 選擇職缺 —",
+      "dana": "尚無待背調職缺 — 先執行 Rex",
+      "leo": "尚無放行職缺 — 先執行 Dana",
+      "clara": "尚無履歷就緒職缺 — 先執行 Leo"
+    },
+    "badges": {
+      "proceed": "放行",
+      "avoid": "避免",
+      "cv": "CV",
+      "typ": "TYP",
+      "fail": "失敗",
+      "ready": "就緒"
+    }
+  },
+  "detail": {
+    "title": "職缺詳情",
+    "tabs": {
+      "overview": "總覽",
+      "dossier": "背調報告",
+      "pack": "申請包",
+      "cv": "履歷預覽"
+    },
+    "created": "建立於",
+    "jobNotFound": "找不到職缺",
+    "loading": "載入中…",
+    "noDossier": "尚無背調報告 — 執行 Dana 來調查此雇主。",
+    "noChecklist": "尚無申請清單 — 等 Leo 產出履歷後執行 Clara。",
+    "noCv": "尚無履歷 — 等 Dana 標記雇主放行後執行 Leo。",
+    "cvReady": "CV.pdf 就緒",
+    "cvTypOnly": "僅 CV.typ",
+    "openCvNewTab": "在新分頁開啟",
+    "downloadCv": "下載 CV",
+    "appReady": "申請就緒",
+    "sections": {
+      "techStack": "技術棧",
+      "culture": "工程文化",
+      "sentiment": "Glassdoor 觀感",
+      "news": "近期新聞",
+      "greenFlags": "綠旗",
+      "redFlags": "紅旗",
+      "reverseQs": "反向面試問題",
+      "openDossier": "開啟完整背調報告（Markdown）"
+    },
+    "none": "無",
+    "hardSkill": "硬技能",
+    "transfer": "可遷移",
+    "composite": "綜合",
+    "weighting": "加權 55% 硬技能 / 45% 可遷移",
+    "stage": {
+      "title": "重做此職缺",
+      "run": "執行",
+      "rerun": "重跑",
+      "stop": "停止",
+      "runNamed": "執行 {{name}}",
+      "rerunNamed": "重跑 {{name}}",
+      "stopNamed": "停止 {{name}}",
+      "failed": "啟動失敗",
+      "danaTitle": "Dana — 雇主背調",
+      "leoTitle": "Leo — 履歷預覽",
+      "claraTitle": "Clara — 申請包",
+      "hintDana": "Dana 通常需要綜合分 ≥ {{n}}。代理可能會略過此職缺。",
+      "hintLeo": "Leo 通常需要 {{verdict}} 結論。代理可能會略過此職缺。",
+      "hintClara": "Clara 通常需要已生成的履歷。代理可能會略過此職缺。"
+    }
+  },
+  "tutorial": {
+    "purpose": "目的",
+    "howTo": "使用方式",
+    "run": "執行",
+    "stop": "停止",
+    "running": "執行中…",
+    "started": "✓ 已啟動（pid {{pid}}）",
+    "failed": "啟動失敗",
+    "fields": {
+      "query": "額外關鍵字",
+      "minScore": "最低綜合分數",
+      "company": "公司（部分字串）",
+      "jobId": "職缺 id",
+      "forceRefresh": "強制重跑",
+      "minMatchScore": "最低匹配分數",
+      "cvFile": "上傳 CV（文字或 .txt/.json/.md）",
+      "cvPath": "CV 檔案路徑（可選）",
+      "canvasTemplate": "Canvas 模板（可選）"
+    },
+    "actions": {
+      "milo": "執行 Milo 校準職涯視角",
+      "rex": "指派搜尋軌道給 Rex",
+      "dana": "請 Dana 背調待查公司",
+      "leo": "用 Leo 生成量身 Typst 履歷",
+      "clara": "用 Clara 審核申請入口"
+    }
+  },
+  "agents": {
+    "milo": {
+      "role": "Agent 0 — 探索摘要者",
+      "bio": "探索摘要者。匯入你的履歷，透過聊天了解你的職涯處境，萃取可遷移技能與探索光譜，為下游代理提供視角。",
+      "purpose": "不作硬性過濾，而是擴展 Rex 的搜尋視野。萃取你的核心能力與探索方向，生成候選人敘事。",
+      "howTo": [
+        "可選擇上傳 CV（文字或 PDF 路徑）。",
+        "與 Milo 聊天，補充你的職涯處境（如借調、外判等特殊情況）。",
+        "按「執行 Milo」— 他會萃取 PAC（探索光譜）並寫入設定檔。"
+      ]
+    },
+    "rex": {
+      "role": "Agent 1 — 職涯路徑架構師",
+      "bio": "職涯路徑架構師。擴展你的跨港產業視野（PropTech、Critical Utilities、Logistics、FinTech），再用 Tavily 爬梳可信職缺板與 ATS 平台。",
+      "purpose": "發掘你自己不會搜的跨領域職缺，並以雙分數（硬技能 / 可遷移性）矩陣評分。",
+      "howTo": [
+        "選擇候選人設定檔（右上角）。",
+        "可在快速操作中加入額外搜尋關鍵字。",
+        "設定最低綜合分數（預設 75，或可遷移 ≥ 85）。",
+        "按「執行 Rex」— 他會去識別化你的主檔、規劃搜尋軌道、爬梳可信來源。"
+      ]
+    },
+    "dana": {
+      "role": "Agent 2 — 背景調查",
+      "bio": "公司調查員。跑多軌 Tavily 研究（新聞、觀感、技術），蒸餾成 CompanyDueDiligence 報告並給出放行 / 避免 判決。",
+      "purpose": "在你投入量身履歷前，告訴你這雇主值不值得。",
+      "howTo": [
+        "Rex 必須先找到職缺（綜合 match_score ≥ 80）。",
+        "可指定單一公司或職缺 id。",
+        "勾選「強制重跑」即使已有報告也重新研究。",
+        "按「執行 Dana」— 她會把 Markdown 報告寫到 output/dossiers/。"
+      ]
+    },
+    "leo": {
+      "role": "Agent 3 — 履歷生成",
+      "bio": "履歷裁縫。依 JD 對你的主檔做 ATS 對齊改寫（僅限主檔事實、STAR 法），用 Jinja2 渲染 Typst 並編譯成 PDF。",
+      "purpose": "為每個職缺產出 ATS 對齊的履歷 — 但只針對放行且高分的職缺。",
+      "howTo": [
+        "Dana 必須已標記雇主為放行。",
+        "職缺需 match_score ≥ 80。",
+        "可指定單一公司或職缺 id。",
+        "可選 Canvas 模板（classic、compact、technical），留空則按 JD 自動挑選。",
+        "按「執行 Leo」— 他會把 CV.typ + CV.pdf 寫到 output/{company}_{role}/。"
+      ]
+    },
+    "clara": {
+      "role": "Agent 4 — 證照與入口審核",
+      "bio": "申請準備審核員。把你的真實證照比對職缺、偵測申請入口（Workday / Greenhouse / JobsDB / Direct Email），匯出遞交清單。",
+      "purpose": "銜接「履歷就緒」到「實際遞交」的最後一步。",
+      "howTo": [
+        "Leo 必須已產出履歷（cv_status = MATERIALS_GENERATED）。",
+        "可指定單一公司或職缺 id。",
+        "按「執行 Clara」— 她會蓋 Application_Checklist.md 並翻轉 application_ready。"
+      ]
+    }
+  },
+  "backend": {
+    "offlineTitle": "後端離線",
+    "offlineMsg": "FastAPI 伺服器未在 :8000 運行。請在另一個終端啟動：",
+    "offlineCmd": "conda activate jobhunter && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload",
+    "online": "後端上線"
+  },
+  "pipeline": {
+    "run": "完成整條管線",
+    "stop": "停止管線"
+  },
+  "logs": {
+    "title": "代理日誌",
+    "subtitle": "即時 stdout · 全部代理",
+    "perAgent": "分代理",
+    "unified": "統合",
+    "empty": "尚無日誌"
+  },
+  "suggestions": {
+    "notice": "💡 建議標籤由本地 AI 模型（Ollama gemma4:e2b）根據你的履歷生成，不會上傳雲端",
+    "generate": "生成建議標籤",
+    "loading": "生成中…",
+    "clickToFill": "點擊標籤自動填入欄位",
+    "fallbackNote": "⚠️ 本地模型未啟動，使用預設建議",
+    "rexTitle": "搜尋關鍵字建議",
+    "danaTitle": "目標僱主建議"
+  },
+  "skills": {
+    "suggest": "建議技能",
+    "suggesting": "生成中…",
+    "suggestNotice": "💡 由本地 AI 模型（Ollama gemma4:e2b）根據你的經歷生成",
+    "fallbackNote": "⚠️ 本地模型未啟動",
+    "addToCategory": "加入此分類",
+    "refreshCategories": "從求職平台更新",
+    "refreshing": "更新中…",
+    "lastUpdated": "最後更新",
+    "pickCategory": "選擇平台參考分類…",
+    "orTypeCustom": "或自訂分類名稱"
+  },
+  "lang": {
+    "switch": "語言 / Language",
+    "en": "English",
+    "zhHK": "繁體中文"
+  },
+  "profile": {
+    "edit": "編輯設定檔",
+    "newPerson": "新增候選人",
+    "create": "建立",
+    "save": "儲存",
+    "loading": "載入設定檔…",
+    "needIdName": "請輸入 id 與姓名。",
+    "idHint": "id 為檔名檔名（例如 damien → config/profiles/damien.json）。僅限字母、數字、- 或 _。",
+    "selectJob": "— 選擇職缺 —",
+    "newCategory": "新分類",
+    "tabs": {
+      "basics": "基本資料",
+      "education": "學歷",
+      "skills": "技能",
+      "experience": "工作經驗",
+      "projects": "專案",
+      "certs": "證照"
+    },
+    "fields": {
+      "id": "設定檔 id",
+      "name": "姓名",
+      "location": "所在地",
+      "minSalary": "最低期望薪資（港幣）",
+      "targetRoles": "目標職位",
+      "languages": "語言能力",
+      "institution": "機構",
+      "degree": "學位",
+      "year": "年份",
+      "company": "公司",
+      "role": "職位",
+      "period": "期間",
+      "highlights": "重點（每行一項）",
+      "skillsUsed": "使用技能",
+      "description": "描述",
+      "techStack": "技術棧",
+      "issuer": "發證機構",
+      "category": "分類"
+    },
+    "addEducation": "新增學歷",
+    "addExperience": "新增經驗",
+    "addProject": "新增專案",
+    "addCert": "新增證照"
+  },
+  "milo": {
+    "title": "Milo",
+    "talk": "與 Milo 對話",
+    "you": "你",
+    "placeholder": "向 Milo 提問你的職涯…",
+    "empty": "尚無對話 — 附加 CV 或打個招呼。",
+    "loadingHistory": "載入歷史…",
+    "historyError": "DB 遷移未跑前無法載入歷史。",
+    "parsing": "Ollama 解析 CV 中…",
+    "imported": "✓ CV 已匯入 — 設定檔已更新",
+    "pdfNote": "支援 PDF、TXT、MD、JSON、DOCX。",
+    "attach": "附加檔案",
+    "attachHint": "PDF / TXT / MD / JSON / DOCX · 每檔最多 5MB · 每次最多 3 個",
+    "removeFile": "移除",
+    "tooLarge": "{{name}} 超過 5MB",
+    "maxFiles": "每則訊息最多 3 個檔案"
+  },
+  "telegram": {
+    "find": "Telegram",
+    "open": "開啟 Telegram 機械人 {{handle}}（id {{id}}）"
+  }
+}

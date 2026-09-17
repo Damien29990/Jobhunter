@@ -1,0 +1,68 @@
+// Typst resume template rendered by Jinja2.
+// Ref: Agent 3 — Tailored CV Generator
+// Injected text is wrapped in content blocks [...] and passed through typ_escape.
+#set page(
+  paper: "a4",
+  margin: (top: 1.6cm, bottom: 1.6cm, left: 1.8cm, right: 1.8cm),
+)
+#set text(font: "New Computer Modern", size: 10.5pt, lang: "en")
+#set par(leading: 0.62em, justify: false)
+#show link: underline
+
+#align(center)[
+  #text(size: 22pt, weight: "bold")[{{ candidate_name | typ_escape }}]
+  #v(0.3em)
+  #text(size: 10pt)[{{ contact_line | typ_escape }}]
+]
+
+#v(0.4em)
+#line(stroke: 0.6pt)
+#v(0.4em)
+
+= Professional summary
+
+{{ professional_summary | typ_escape }}
+
+= Skills
+
+{% for category, items in prioritized_skills.items() %}- #text(weight: "bold")[{{ category | typ_escape }}:] {{ items | join(", ") | typ_escape }}
+{% endfor %}
+
+= Experience
+
+{% for job in experience %}
+#block[
+  #text(size: 12pt, weight: "bold")[{{ job.role | typ_escape }} — {{ job.company | typ_escape }}]
+  #h(1fr) #text(size: 9.5pt)[{{ job.period | typ_escape }}]
+]
+#v(0.2em)
+{% for bullet in job.highlights %}- {{ bullet | typ_escape }}
+{% endfor %}
+{% if not loop.last %}#v(0.4em){% endif %}
+{% endfor %}
+
+= Projects
+
+{% for project in projects %}
+#block[
+  #text(weight: "bold")[{{ project.name | typ_escape }}]
+]
+{{ project.description | typ_escape }}
+
+#text(size: 9.5pt)[Stack: {{ project.tech_stack | join(", ") | typ_escape }}]
+{% if not loop.last %}#v(0.3em){% endif %}
+{% endfor %}
+
+= Certifications
+
+{% for cert in certifications %}- {{ cert | typ_escape }}
+{% endfor %}
+
+= Education
+
+{% for edu in education %}- {{ edu.degree | typ_escape }} — {{ edu.institution | typ_escape }} ({{ edu.year | typ_escape }})
+{% endfor %}
+
+= Languages
+
+{{ languages | join(" · ") | typ_escape }}

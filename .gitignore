@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+
+# Local runtime data (PII, job listings, generated CVs)
+job_agent.db
+job_agent.db-*
+*.db-wal
+*.db-shm
+output/*
+!output/.gitkeep
+uploads/*
+!uploads/.gitkeep
+config/master_profile.json
+config/profiles/
+config/milo_context.md
+config/milo_last_compress.md
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.local
+
+# Leftovers
+/test
+tmp_*.py

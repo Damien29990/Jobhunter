@@ -1,0 +1,78 @@
+{
+  "last_updated": "2026-09-10T00:00:00+08:00",
+  "sources": ["jobsdb", "ctgoodjobs", "linkedin"],
+  "categories": [
+    {
+      "internal_name": "backend_and_data",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Backend Development",
+        "ctgoodjobs": "IT — Software Development",
+        "linkedin": "Software Development — Backend"
+      },
+      "description": "Server-side languages, databases, APIs, data engineering"
+    },
+    {
+      "internal_name": "frontend_and_fullstack",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Frontend Development",
+        "ctgoodjobs": "IT — Web Development",
+        "linkedin": "Software Development — Frontend"
+      },
+      "description": "UI frameworks, JavaScript, full-stack web architecture"
+    },
+    {
+      "internal_name": "ai_and_agents",
+      "platform_labels": {
+        "jobsdb": "Information Technology — AI / Machine Learning",
+        "ctgoodjobs": "IT — AI / Data Science",
+        "linkedin": "Artificial Intelligence"
+      },
+      "description": "LLM orchestration, ML frameworks, AI agents, embeddings"
+    },
+    {
+      "internal_name": "iot_and_automation",
+      "platform_labels": {
+        "jobsdb": "Engineering — IoT / Electronics",
+        "ctgoodjobs": "Engineering — Electronic / Electrical",
+        "linkedin": "Internet of Things (IoT)"
+      },
+      "description": "Edge computing, telemetry, SCADA, workflow automation"
+    },
+    {
+      "internal_name": "cloud_and_devops",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Cloud / DevOps",
+        "ctgoodjobs": "IT — Infrastructure / Cloud",
+        "linkedin": "Cloud Computing"
+      },
+      "description": "AWS/GCP/Azure, Kubernetes, CI/CD, infrastructure as code"
+    },
+    {
+      "internal_name": "data_and_analytics",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Data / Analytics",
+        "ctgoodjobs": "IT — Data Analysis",
+        "linkedin": "Data & Analytics"
+      },
+      "description": "SQL, data warehousing, BI, ETL, visualization"
+    },
+    {
+      "internal_name": "cybersecurity",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Cybersecurity",
+        "ctgoodjobs": "IT — Information Security",
+        "linkedin": "Cybersecurity"
+      },
+      "description": "Network security, penetration testing, compliance"
+    },
+    {
+      "internal_name": "project_management",
+      "platform_labels": {
+        "jobsdb": "Information Technology — Project Management",
+        "ctgoodjobs": "IT — IT Project Management",
+        "linkedin": "IT Project Management"
+      },
+      "description": "Agile, Scrum, PMP, stakeholder management"
+    }
+  ]
+}

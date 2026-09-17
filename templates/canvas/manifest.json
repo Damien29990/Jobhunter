@@ -1,0 +1,41 @@
+{
+  "source": "leo-cv-canvas",
+  "note": "Local Typst/Jinja layouts Leo can load. Not Canva.com.",
+  "templates": [
+    {
+      "id": "classic",
+      "name": "ATS Classic",
+      "file": "resume.typ.j2",
+      "when": "Default single-column ATS layout",
+      "keywords": []
+    },
+    {
+      "id": "compact",
+      "name": "One-page Compact",
+      "file": "canvas/compact.typ.j2",
+      "when": "JD asks for a one-page or concise CV",
+      "keywords": [
+        "one page",
+        "1-page",
+        "one-page",
+        "single page",
+        "concise cv",
+        "short cv"
+      ]
+    },
+    {
+      "id": "technical",
+      "name": "Skills-first Technical",
+      "file": "canvas/technical.typ.j2",
+      "when": "Engineering roles that should lead with stack and projects",
+      "keywords": [
+        "platform engineer",
+        "site reliability",
+        "devops",
+        "iiot",
+        "scada",
+        "full-stack"
+      ]
+    }
+  ]
+}

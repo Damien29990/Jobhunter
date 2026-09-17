@@ -1,0 +1,21 @@
+{
+  "basics": {
+    "name": "Your Name",
+    "location": "Hong Kong",
+    "target_roles": ["Software Engineer"],
+    "min_expected_salary_hkd": 0,
+    "languages": ["Cantonese", "English"]
+  },
+  "education": [],
+  "technical_skills": {},
+  "experience": [],
+  "projects": [],
+  "certifications": [],
+  "acceptance_context": {
+    "core_transferable_skills": [],
+    "target_industries": [],
+    "role_archetypes": [],
+    "absolute_deal_breakers": [],
+    "executive_narrative": ""
+  }
+}

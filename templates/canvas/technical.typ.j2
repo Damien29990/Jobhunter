@@ -1,0 +1,67 @@
+// Typst resume — skills and projects first, from Leo's Canvas catalog.
+// Ref: templates/canvas/manifest.json id=technical
+#set page(
+  paper: "a4",
+  margin: (top: 1.5cm, bottom: 1.5cm, left: 1.7cm, right: 1.7cm),
+)
+#set text(font: "New Computer Modern", size: 10.5pt, lang: "en")
+#set par(leading: 0.58em, justify: false)
+#show link: underline
+
+#align(center)[
+  #text(size: 20pt, weight: "bold")[{{ candidate_name | typ_escape }}]
+  #v(0.25em)
+  #text(size: 10pt)[{{ contact_line | typ_escape }}]
+]
+
+#v(0.35em)
+#line(stroke: 0.7pt)
+#v(0.35em)
+
+= Professional summary
+
+{{ professional_summary | typ_escape }}
+
+= Technical skills
+
+{% for category, items in prioritized_skills.items() %}- #text(weight: "bold")[{{ category | typ_escape }}:] {{ items | join(", ") | typ_escape }}
+{% endfor %}
+
+= Selected projects
+
+{% for project in projects %}
+#block[
+  #text(weight: "bold")[{{ project.name | typ_escape }}]
+]
+{{ project.description | typ_escape }}
+
+#text(size: 9.5pt)[Stack: {{ project.tech_stack | join(", ") | typ_escape }}]
+{% if not loop.last %}#v(0.28em){% endif %}
+{% endfor %}
+
+= Experience
+
+{% for job in experience %}
+#block[
+  #text(size: 12pt, weight: "bold")[{{ job.role | typ_escape }} — {{ job.company | typ_escape }}]
+  #h(1fr) #text(size: 9.5pt)[{{ job.period | typ_escape }}]
+]
+#v(0.15em)
+{% for bullet in job.highlights %}- {{ bullet | typ_escape }}
+{% endfor %}
+{% if not loop.last %}#v(0.35em){% endif %}
+{% endfor %}
+
+= Certifications
+
+{% for cert in certifications %}- {{ cert | typ_escape }}
+{% endfor %}
+
+= Education
+
+{% for edu in education %}- {{ edu.degree | typ_escape }} — {{ edu.institution | typ_escape }} ({{ edu.year | typ_escape }})
+{% endfor %}
+
+= Languages
+
+{{ languages | join(" · ") | typ_escape }}
