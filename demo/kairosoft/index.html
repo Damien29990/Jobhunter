@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kairosoft-style staff demo — Jobhunter (does not touch PixelOffice)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --cream: #fff4d4;
+      --panel: #ffe7b0;
+      --ink: #5a3a18;
+      --orange: #f0a020;
+      --orange-dk: #c87810;
+      --green: #6cbc58;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: #f3d9a0;
+      color: var(--ink);
+      font-family: "Press Start 2P", ui-monospace, monospace;
+    }
+    body { padding: 16px; }
+    h1 {
+      font-size: 11px;
+      line-height: 1.6;
+      background: var(--orange);
+      border: 3px solid var(--orange-dk);
+      color: #fffdf5;
+      padding: 10px 12px;
+      margin: 0 0 12px;
+      text-shadow: 2px 2px 0 var(--orange-dk);
+    }
+    .sub {
+      font-size: 9px;
+      line-height: 1.7;
+      background: var(--cream);
+      border: 3px solid #e0c070;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      max-width: 960px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+    .stage {
+      background: #c8e8a8;
+      border: 4px solid #7aa050;
+      image-rendering: pixelated;
+      display: block;
+    }
+    .cards { display: flex; flex-wrap: wrap; gap: 8px; }
+    .card {
+      width: 148px;
+      background: var(--cream);
+      border: 3px solid #d4b060;
+      padding: 8px;
+    }
+    .card canvas { display: block; margin: 0 auto 6px; image-rendering: pixelated; }
+    .card .name { font-size: 9px; color: var(--orange-dk); }
+    .card .role { font-size: 8px; line-height: 1.5; margin-top: 6px; color: #7a5a30; }
+    button {
+      font-family: inherit;
+      font-size: 9px;
+      background: var(--green);
+      color: #fffdf5;
+      border: 3px solid #3e8a38;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.05); }
+    .recipe {
+      font-size: 8px;
+      line-height: 1.7;
+      background: var(--panel);
+      border: 3px solid #e0c070;
+      padding: 10px 12px;
+      max-width: 360px;
+    }
+    .recipe b { color: var(--orange-dk); }
+    .hint { font-size: 8px; margin-top: 8px; color: #7a5a30; }
+  </style>
+</head>
+<body>
+  <h1>カイロソフト風 · Kairosoft staff study</h1>
+  <p class="sub">
+    Standalone demo only. Jobhunter PixelOffice is not modified.<br />
+    Recipe: huge round head, tiny torso, 2-dot eyes, 2-frame walk, nearest-neighbour scale, cream / orange menu chrome.
+  </p>
+
+  <div class="row">
+    <div>
+      <canvas id="floor" class="stage" width="640" height="280"></canvas>
+      <p class="hint">Click a person: they talk, then walk. Chatter pops up on its own, like visitors in 温泉物語.</p>
+      <p>
+        <button type="button" id="walkAll">Walk</button>
+        <button type="button" id="idleAll">Idle</button>
+        <button type="button" id="talkAll">Talk</button>
+      </p>
+      <p class="hint" id="log">…</p>
+    </div>
+    <div class="recipe">
+      <b>Style notes (Game Dev Story / 温泉物語)</b><br /><br />
+      • Head is ~half the sprite. Body is a stub.<br />
+      • Eyes: white 2×2 + black 1×1 catch. Optional blush.<br />
+      • Hair is a helmet, not strands.<br />
+      • Walk is two frames + 1px bob. Never 8-frame Western cycles.<br />
+      • Scale with imageSmoothingEnabled = false.<br />
+      • UI: orange title bar, cream cards, chunky 3px borders.<br />
+      • Talk: tiny white balloon, 2–5 words, then it pops. Random office chatter while they work.<br /><br />
+      Green sphere + ball antenna = Kairobot-class mascot (original, not a copy).
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:16px">Hire cards (menu portraits, still SD)</p>
+  <div class="cards" id="cards"></div>
+
+<script>
+/**
+ * Original Jobhunter staff in a Kairosoft-like SD language.
+ * Not traced from Game Dev Story sheets — same grammar, new pixels.
+ */
+const SCALE = 6
+const CELL = 1
+
+const SKIN = '#f3c6a2'
+const SKIN_S = '#e2a57e'
+const BLUSH = '#f0a090'
+const WHITE = '#fffef8'
+const INK = '#3a2414'
+const SHOE = '#4a3020'
+
+const STAFF = [
+  {
+    key: 'milo', name: 'Milo', role: 'Career lens',
+    hair: '#7b5cb0', hairS: '#5a3d8a', shirt: '#c4b0f0', shirtS: '#8d78c8', pants: '#5a4a80', item: 'book',
+    say: {
+      idle: ['Hmm…', 'Tell me more', 'Lens++', '第二人生？'],
+      walk: ['Calibrating!', 'PAC ready', 'I see a path'],
+      click: ["I'm listening.", 'What happened?', 'Let’s map it'],
+    },
+  },
+  {
+    key: 'rex', name: 'Rex', role: 'Talent scout',
+    hair: '#3b2418', hairS: '#2a1810', shirt: '#3cbe78', shirtS: '#2a8f58', pants: '#2e5a40', item: 'glass',
+    say: {
+      idle: ['Job found!', 'Score 80+', '次だ！', 'Boards…'],
+      walk: ['Tavily go!', 'One more lane', 'Scout mode'],
+      click: ['On it!', 'New posting!', 'This one’s hot'],
+    },
+  },
+  {
+    key: 'dana', name: 'Dana', role: 'Due diligence',
+    hair: '#2aa0b8', hairS: '#1b6f82', shirt: '#8fe0ea', shirtS: '#4db8c6', pants: '#1e4a62', item: 'files',
+    say: {
+      idle: ['PROCEED?', 'Red flag…', '調べます', 'Hmm.'],
+      walk: ['Dossier!', 'Vetting…', 'Source check'],
+      click: ['I’ll look.', 'AVOID? Wait', 'Folder ready'],
+    },
+  },
+  {
+    key: 'leo', name: 'Leo', role: 'CV printer',
+    hair: '#c88820', hairS: '#8a5a10', shirt: '#f0c050', shirtS: '#c89820', pants: '#6a4a18', item: 'paper',
+    say: {
+      idle: ['Typst…', 'Ink warm', '一枚できた', 'Layout++'],
+      walk: ['Print CV!', 'Shipped!', 'PDF go'],
+      click: ['Tailored.', 'Compile!', 'Need a template?'],
+    },
+  },
+  {
+    key: 'clara', name: 'Clara', role: 'App auditor',
+    hair: '#b03048', hairS: '#7a1c30', shirt: '#f07890', shirtS: '#c04860', pants: '#5a2030', item: 'stamp',
+    say: {
+      idle: ['Stamp!', 'Ready?', '提出ね', 'Portal…'],
+      walk: ['Checklist!', 'Channel ok', 'Almost'],
+      click: ['Application!', 'Don’t skip HR', 'I stamped it'],
+    },
+  },
+  {
+    key: 'kairo', name: 'Kairo', role: 'Office mascot',
+    hair: '#7ed321', hairS: '#4a9a12', shirt: '#6cbc40', shirtS: '#3e8a28', pants: '#3e8a28', item: 'none', robot: true,
+    say: {
+      idle: ['Beep!', 'Kairo!', 'Found you', '♪'],
+      walk: ['Thanks!', 'Keep playing', '見つかった！'],
+      click: ['Hi.', 'I come in peace', 'Hire me?'],
+    },
+  },
+]
+
+function px(ctx, x, y, w, h, fill) {
+  ctx.fillStyle = fill
+  ctx.fillRect(x, y, w, h)
+}
+
+function blob(ctx, x, y, w, h, fill) {
+  px(ctx, x + 1, y, w - 2, h, fill)
+  px(ctx, x, y + 1, w, h - 2, fill)
+}
+
+/** 16×24 Kairosoft-like body. frame 0 idle, 1/2 walk. */
+function drawStaff(ctx, staff, frame, ox, oy) {
+  const bob = frame === 1 ? -1 : 0
+  const leg = frame === 0 ? 0 : frame === 1 ? -1 : 1
+  ctx.save()
+  ctx.translate(ox, oy + bob)
+
+  if (staff.robot) {
+    drawRobot(ctx, frame)
+    ctx.restore()
+    return
+  }
+
+  // shadow
+  px(ctx, 4, 22, 8, 2, 'rgba(60,40,20,0.25)')
+
+  // hair helmet
+  blob(ctx, 3, 0, 10, 9, staff.hair)
+  px(ctx, 4, 0, 8, 1, staff.hairS)
+  // face
+  blob(ctx, 4, 3, 8, 7, SKIN)
+  px(ctx, 5, 9, 6, 1, SKIN_S)
+  // bangs
+  px(ctx, 4, 3, 8, 1, staff.hair)
+  px(ctx, 4, 4, 3, 1, staff.hair)
+  if (staff.key === 'rex') {
+    px(ctx, 6, 0, 1, 1, staff.hair)
+    px(ctx, 8, 0, 1, 1, staff.hair)
+    px(ctx, 10, 1, 1, 1, staff.hair)
+  }
+  if (staff.key === 'leo') {
+    px(ctx, 11, 2, 2, 2, staff.hair)
+    px(ctx, 3, 6, 1, 2, staff.hair)
+  }
+  if (staff.key === 'clara') {
+    px(ctx, 11, 1, 2, 2, '#f0d060')
+    px(ctx, 12, 0, 1, 1, '#f0d060')
+  }
+  if (staff.key === 'dana') {
+    px(ctx, 3, 5, 1, 4, staff.hair)
+    px(ctx, 12, 5, 1, 4, staff.hair)
+  }
+
+  // eyes
+  px(ctx, 5, 6, 2, 2, WHITE)
+  px(ctx, 9, 6, 2, 2, WHITE)
+  px(ctx, 6, 6, 1, 1, INK)
+  px(ctx, 10, 6, 1, 1, INK)
+  px(ctx, 5, 8, 1, 1, BLUSH)
+  px(ctx, 10, 8, 1, 1, BLUSH)
+  px(ctx, 7, 8, 2, 1, '#c47a6a')
+
+  if (staff.key === 'milo') {
+    px(ctx, 5, 6, 2, 1, '#5a3d8a')
+    px(ctx, 9, 6, 2, 1, '#5a3d8a')
+    px(ctx, 7, 6, 2, 1, '#5a3d8a')
+  }
+
+  // torso
+  blob(ctx, 5, 10, 6, 6, staff.shirt)
+  px(ctx, 5, 10, 6, 1, staff.shirtS)
+  // arms
+  const armY = frame === 2 ? 12 : 11
+  px(ctx, 4, armY, 1, 4, SKIN)
+  px(ctx, 11, armY + (frame === 1 ? 1 : 0), 1, 4, SKIN)
+  // item
+  if (staff.item === 'files') px(ctx, 12, 12, 3, 3, '#e8d2a0')
+  if (staff.item === 'paper') px(ctx, 12, 11, 3, 4, WHITE)
+  if (staff.item === 'stamp') px(ctx, 12, 12, 2, 2, staff.hair)
+  if (staff.item === 'book') px(ctx, 2, 13, 2, 3, '#a78bfa')
+  if (staff.item === 'glass') {
+    px(ctx, 12, 12, 3, 2, '#c8f0ff')
+    px(ctx, 13, 11, 1, 1, '#8899aa')
+  }
+
+  // legs / shoes
+  px(ctx, 6 + leg, 16, 2, 5, staff.pants)
+  px(ctx, 8 - leg, 16, 2, 5, staff.pants)
+  px(ctx, 6 + leg, 20, 2, 2, SHOE)
+  px(ctx, 8 - leg, 20, 2, 2, SHOE)
+
+  ctx.restore()
+}
+
+function drawRobot(ctx, frame) {
+  px(ctx, 4, 22, 8, 2, 'rgba(60,40,20,0.25)')
+  px(ctx, 7, 0, 2, 3, '#4a9a12')
+  px(ctx, 6, 0, 4, 2, '#f0d060')
+  blob(ctx, 3, 3, 10, 10, '#7ed321')
+  px(ctx, 4, 4, 8, 8, '#8eeb40')
+  px(ctx, 5, 6, 2, 3, WHITE)
+  px(ctx, 9, 6, 2, 3, WHITE)
+  px(ctx, 6, 7, 1, 2, INK)
+  px(ctx, 10, 7, 1, 2, INK)
+  px(ctx, 7, 10, 2, 1, '#3e8a28')
+  const arm = frame === 1 ? -1 : 1
+  px(ctx, 2, 8 + arm, 2, 2, '#7ed321')
+  px(ctx, 12, 8 - arm, 2, 2, '#7ed321')
+  px(ctx, 6, 13, 4, 3, '#6cbc40')
+  px(ctx, 5 + (frame === 2 ? 1 : 0), 16, 2, 5, '#4a9a12')
+  px(ctx, 9 - (frame === 2 ? 1 : 0), 16, 2, 5, '#4a9a12')
+}
+
+function blitTo(dest, staff, frame, dx, dy, scale) {
+  const off = document.createElement('canvas')
+  off.width = 16
+  off.height = 24
+  const o = off.getContext('2d')
+  drawStaff(o, staff, frame, 0, 0)
+  dest.imageSmoothingEnabled = false
+  dest.drawImage(off, dx, dy, 16 * scale, 24 * scale)
+}
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+function say(actor, kind) {
+  const lines = actor.staff.say[kind] || actor.staff.say.idle
+  actor.bubble = { text: pick(lines), until: performance.now() + 2400 }
+  const log = document.getElementById('log')
+  if (log) log.textContent = `${actor.staff.name}: 「${actor.bubble.text}」`
+}
+
+const actors = STAFF.map((s, i) => ({
+  staff: s,
+  x: 24 + i * 102,
+  y: 88,
+  walking: false,
+  dir: 1,
+  bubble: null,
+}))
+
+function drawBalloon(ctx, text, cx, bottom) {
+  ctx.font = '8px "Press Start 2P"'
+  const padX = 6
+  const w = Math.ceil(ctx.measureText(text).width) + padX * 2
+  const h = 16
+  let x = Math.round(cx - w / 2)
+  x = Math.max(4, Math.min(ctx.canvas.width - w - 4, x))
+  const y = Math.max(4, bottom - h)
+  ctx.fillStyle = '#fffef8'
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = '#5a3a18'
+  ctx.fillRect(x, y, w, 2)
+  ctx.fillRect(x, y + h - 2, w, 2)
+  ctx.fillRect(x, y, 2, h)
+  ctx.fillRect(x + w - 2, y, 2, h)
+  const mid = Math.round(Math.min(Math.max(cx, x + 8), x + w - 8))
+  ctx.fillStyle = '#fffef8'
+  ctx.fillRect(mid - 3, y + h - 2, 6, 4)
+  ctx.fillStyle = '#5a3a18'
+  ctx.fillRect(mid - 1, y + h + 2, 2, 3)
+  ctx.fillRect(mid, y + h + 4, 2, 2)
+  ctx.fillStyle = '#5a3a18'
+  ctx.fillText(text, x + padX, y + 12)
+}
+
+const floor = document.getElementById('floor')
+const fctx = floor.getContext('2d')
+
+function drawFloor() {
+  fctx.imageSmoothingEnabled = false
+  fctx.fillStyle = '#b8dc90'
+  fctx.fillRect(0, 0, floor.width, floor.height)
+  fctx.fillStyle = '#c8e8a8'
+  for (let y = 0; y < floor.height; y += 16) {
+    for (let x = 0; x < floor.width; x += 16) {
+      if (((x + y) / 16) % 2 === 0) fctx.fillRect(x, y, 16, 16)
+    }
+  }
+  fctx.fillStyle = '#e8d2a0'
+  fctx.fillRect(0, 248, floor.width, 32)
+  fctx.fillStyle = '#d4b060'
+  fctx.fillRect(0, 246, floor.width, 4)
+  fctx.fillStyle = '#6cbc58'
+  fctx.fillRect(600, 228, 16, 20)
+  fctx.fillStyle = '#c87810'
+  fctx.fillRect(602, 244, 12, 8)
+}
+
+let last = 0
+let anim = 0
+let chatterAt = 1200
+function loop(now) {
+  if (!last) last = now
+  if (now - last > 180) {
+    anim = (anim + 1) % 2
+    last = now
+  }
+  if (now >= chatterAt) {
+    const quiet = actors.filter((a) => !a.bubble || a.bubble.until < now)
+    if (quiet.length) {
+      const a = pick(quiet)
+      say(a, a.walking ? 'walk' : 'idle')
+    }
+    chatterAt = now + 2200 + Math.random() * 1800
+  }
+  drawFloor()
+  for (const a of actors) {
+    if (a.walking) {
+      a.x += a.dir * 1.1
+      if (a.x > 560) a.dir = -1
+      if (a.x < 16) a.dir = 1
+    }
+    const frame = a.walking ? (anim + 1) : 0
+    const sx = Math.round(a.x)
+    blitTo(fctx, a.staff, frame, sx, a.y, SCALE)
+    fctx.fillStyle = '#5a3a18'
+    fctx.font = '8px "Press Start 2P"'
+    fctx.fillText(a.staff.name, sx + 8, a.y + 24 * SCALE + 12)
+    if (a.bubble && now < a.bubble.until) {
+      drawBalloon(fctx, a.bubble.text, sx + 48, a.y - 4)
+    } else {
+      a.bubble = null
+    }
+  }
+  requestAnimationFrame(loop)
+}
+requestAnimationFrame(loop)
+
+floor.addEventListener('click', (ev) => {
+  const r = floor.getBoundingClientRect()
+  const x = (ev.clientX - r.left) * (floor.width / r.width)
+  let best = null
+  let bestD = 80
+  for (const a of actors) {
+    const d = Math.abs(x - (a.x + 48))
+    if (d < bestD) { bestD = d; best = a }
+  }
+  if (!best) return
+  say(best, 'click')
+  best.walking = !best.walking
+})
+document.getElementById('walkAll').onclick = () => {
+  actors.forEach((a) => { a.walking = true; say(a, 'walk') })
+}
+document.getElementById('idleAll').onclick = () => {
+  actors.forEach((a) => { a.walking = false })
+}
+document.getElementById('talkAll').onclick = () => {
+  actors.forEach((a) => say(a, a.walking ? 'walk' : 'idle'))
+}
+
+const cards = document.getElementById('cards')
+for (const s of STAFF) {
+  const wrap = document.createElement('div')
+  wrap.className = 'card'
+  const c = document.createElement('canvas')
+  c.width = 16 * 5
+  c.height = 24 * 5
+  const cx = c.getContext('2d')
+  blitTo(cx, s, 0, 0, 0, 5)
+  wrap.appendChild(c)
+  const n = document.createElement('div')
+  n.className = 'name'
+  n.textContent = s.name
+  const role = document.createElement('div')
+  role.className = 'role'
+  role.textContent = s.role
+  wrap.appendChild(n)
+  wrap.appendChild(role)
+  wrap.style.cursor = 'pointer'
+  wrap.title = 'Ask them to talk'
+  wrap.addEventListener('click', () => {
+    const actor = actors.find((a) => a.staff.key === s.key)
+    if (actor) say(actor, 'click')
+  })
+  cards.appendChild(wrap)
+}
+</script>
+</body>
+</html>

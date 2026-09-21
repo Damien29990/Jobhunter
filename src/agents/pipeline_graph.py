@@ -40,6 +40,7 @@ from talent_scout_agent import (  # noqa: E402
     JobDBManager,
     now_hk_iso,
 )
+from pipeline_state import TokenMetrics  # noqa: E402
 
 _VALIDATORS_DIR = Path(__file__).resolve().parent.parent / "validators"
 if str(_VALIDATORS_DIR) not in sys.path:
@@ -432,7 +433,13 @@ def run_pipeline(
     }
 
     log_system("LangGraph pipeline run started", level="START")
-    final_state = graph.invoke(initial_state, {"configurable": {"thread_id": candidate_id}})
+    try:
+        final_state = graph.invoke(
+            initial_state, {"configurable": {"thread_id": candidate_id}}
+        )
+    except Exception as exc:
+        log_system(f"LangGraph pipeline crashed: {exc}", level="ERROR")
+        raise
     log_system("LangGraph pipeline run complete", level="EXIT")
 
     # Send pipeline summary to Telegram with total token usage
