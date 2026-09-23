@@ -31,8 +31,23 @@ _TITLE_STOPWORDS = {
     "the", "and", "for", "with", "role", "vacancy", "careers", "career",
 }
 
-_JOBSDB_SEARCH_PATHS = ("/jobs-in-", "/jobs?", "/jobs", "/search")
+_JOBSDB_POSTING_RE = re.compile(r"/job/\d{5,}", re.I)
+_JOBSDB_JOB_ID_RE = re.compile(
+    r"(?:https?://(?:www\.)?(?:hk\.)?jobsdb\.com)?/job/(\d{5,})",
+    re.I,
+)
+_JOBSDB_CARD_RE = re.compile(
+    r"\[([^\]]+)\]\((?:https?://(?:www\.)?(?:hk\.)?jobsdb\.com)?/job/(\d{5,})",
+    re.I,
+)
 _CTGOODJOBS_POSTING_RE = re.compile(r"/job/\d{4,}")
+# HKSTP Science Park Talent Pool: /job/{id}/{slug}
+# Ref: https://talentjobseeker.hkstp.org/job/103419/AI-Engineer-Cloud-Infrastructure-
+_HKSTP_POSTING_RE = re.compile(r"/job/(\d{4,})(?:/|$)", re.I)
+_HKSTP_CARD_RE = re.compile(
+    r"(?:https?://(?:www\.)?talentjobseeker\.hkstp\.org)?/job/(\d{4,})(?:/([A-Za-z0-9._%-]*))?",
+    re.I,
+)
 _GREENHOUSE_POSTING_RE = re.compile(r"/jobs/\d{5,}")
 _LEVER_POSTING_RE = re.compile(
     r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
@@ -239,11 +254,11 @@ def listing_url_problem(url: str) -> str | None:
         return None
 
     if "jobsdb.com" in host:
-        if path.startswith("/job/"):
-            return None
-        return "JobsDB search or category page"
+        return None if _JOBSDB_POSTING_RE.search(path) else "JobsDB search or category page"
     if "ctgoodjobs.hk" in host:
         return None if _CTGOODJOBS_POSTING_RE.search(path) else "CTgoodjobs non-posting URL"
+    if "talentjobseeker.hkstp.org" in host:
+        return None if _HKSTP_POSTING_RE.search(path) else "HKSTP Talent Pool index, not a posting"
     if "greenhouse.io" in host:
         return None if _GREENHOUSE_POSTING_RE.search(path) else "Greenhouse board index"
     if "lever.co" in host:
@@ -275,6 +290,81 @@ def listing_url_problem(url: str) -> str | None:
     if not has_digit_id and len(segments) < 3:
         return "no job id in URL"
     return None
+
+
+def is_jobsdb_category_url(url: str) -> bool:
+    """True for JobsDB keyword/SEO index pages, not a single vacancy.
+
+    # Ref: Tavily ranks hk.jobsdb.com/*-jobs over /job/{id}
+    """
+    return listing_url_problem(url) == "JobsDB search or category page"
+
+
+def jobsdb_postings_from_listing_text(
+    text: str,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    """Pull /job/{id} cards out of a JobsDB category page (markdown or HTML).
+
+    Tavily Search almost never returns individual JobsDB vacancies because SEEK
+    SEO category pages outrank them. Category extract/search snippets still
+    contain relative /job/94769754 links.
+    # Ref: Tavily extract of hk.jobsdb.com python-engineer-jobs
+    """
+    cap = max(1, int(limit))
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for name, job_id in _JOBSDB_CARD_RE.findall(text or ""):
+        posting = f"https://hk.jobsdb.com/job/{job_id}"
+        if posting in seen:
+            continue
+        seen.add(posting)
+        found.append({"url": posting, "title": (name or "").strip()})
+        if len(found) >= cap:
+            return found
+    for job_id in _JOBSDB_JOB_ID_RE.findall(text or ""):
+        posting = f"https://hk.jobsdb.com/job/{job_id}"
+        if posting in seen:
+            continue
+        seen.add(posting)
+        found.append({"url": posting, "title": ""})
+        if len(found) >= cap:
+            break
+    return found
+
+
+def is_hkstp_listing_url(url: str) -> bool:
+    """True for the HKSTP Talent Pool home/index, not a single vacancy.
+
+    # Ref: https://talentjobseeker.hkstp.org/
+    """
+    return listing_url_problem(url) == "HKSTP Talent Pool index, not a posting"
+
+
+def hkstp_postings_from_listing_text(
+    text: str,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    """Pull /job/{id}/{slug} cards out of the HKSTP Talent Pool index.
+
+    # Ref: talentjobseeker.hkstp.org/job/103419/AI-Engineer-Cloud-Infrastructure-
+    """
+    cap = max(1, int(limit))
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for job_id, slug in _HKSTP_CARD_RE.findall(text or ""):
+        slug = (slug or "").strip("/")
+        posting = f"https://talentjobseeker.hkstp.org/job/{job_id}"
+        if slug:
+            posting = f"{posting}/{slug}"
+        if posting in seen:
+            continue
+        seen.add(posting)
+        title = re.sub(r"[-_]+", " ", slug).strip() if slug else ""
+        found.append({"url": posting, "title": title})
+        if len(found) >= cap:
+            break
+    return found
 
 
 def is_job_posting_url(url: str) -> bool:

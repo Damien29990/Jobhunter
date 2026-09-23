@@ -1,0 +1,34 @@
+// Cover letter template rendered by Jinja2.
+// Ref: Agent 3 — related application documents
+#set page(
+  paper: "a4",
+  margin: (top: 2.2cm, bottom: 2.2cm, left: 2.2cm, right: 2.2cm),
+)
+#set text(font: "New Computer Modern", size: 11pt, lang: "en")
+#set par(leading: 0.78em, justify: true)
+
+#align(right)[
+  #text(weight: "bold")[{{ candidate_name | typ_escape }}] \
+  {{ contact_line }} \
+  {{ letter_date | typ_escape }}
+]
+
+#v(1.4em)
+
+{{ company_name | typ_escape }} \
+{{ target_role | typ_escape }}
+
+#v(1.0em)
+
+{{ greeting | typ_escape }}
+
+#v(0.6em)
+
+{% for para in paragraphs %}
+{{ para | typ_escape }}
+
+{% endfor %}
+{{ closing | typ_escape }}
+
+#v(1.4em)
+{{ candidate_name | typ_escape }}

@@ -6,10 +6,11 @@ import { useTranslation } from 'react-i18next'
 import {
   X, Building2, MapPin, Coins, Link as LinkIcon, FileText, FileCheck,
   ClipboardList, TriangleAlert, ShieldCheck, ExternalLink, LoaderCircle,
-  RefreshCw, CircleCheck, Unlink, Power, Ban, RotateCcw,
+  RefreshCw, CircleCheck, Unlink, Power, Ban, RotateCcw, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import { api, formatHKDateTime } from '../lib/api'
 import DossierBody from './DossierBody'
+import { PIPELINE_STAGES } from './PipelineKanban'
 import { /* JobStageStrip, */ StageEmptyCta, StagePaneAction, useJobStageRunner } from './JobStageActions'
 
 function Chip({ children, color = '#06b6d4' }) {
@@ -155,6 +156,63 @@ function JobStatusRow({ job, onChanged }) {
   )
 }
 
+function RunDanaButton({ job, t, onStarted }) {
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  async function run() {
+    if (!job?.id) return
+    setRunning(true)
+    setResult(null)
+    setError(null)
+    try {
+      const res = await api.runAgent(api.agentRoute.dana, {
+        job_id: Number(job.id),
+        force: true,
+        force_refresh: true,
+      })
+      if (res?.ok) {
+        setResult(res)
+        onStarted?.()
+      } else {
+        setError(t('detail.danaFailed', { error: res?.error || 'unknown' }))
+      }
+    } catch (e) {
+      setError(t('detail.danaFailed', { error: String(e.message || e) }))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="panel-inset p-2.5 space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <ShieldCheck size={14} className="text-cyan-retro shrink-0" />
+        <span className="font-pixel text-[11px] text-cyan-retro">{t('detail.runDana')}</span>
+      </div>
+      <p className="font-mono text-[11px] text-slate-500 leading-4">{t('detail.runDanaHint')}</p>
+      <button
+        type="button"
+        onClick={run}
+        disabled={running}
+        className="font-mono text-[12px] px-2 py-1 panel inline-flex items-center gap-1.5 text-cyan-retro disabled:opacity-50"
+      >
+        {running ? <LoaderCircle size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+        {t('detail.runDana')}
+      </button>
+      {result && (
+        <p className="font-mono text-[11px] text-emerald-retro leading-4">
+          {t('detail.danaStarted', { pid: result.pid })}
+        </p>
+      )}
+      {error && (
+        <p className="font-mono text-[11px] text-rose-retro leading-4">{error}</p>
+      )}
+    </div>
+  )
+}
+
 function OverviewTab({ job, dossier, t, onJobChanged }) {
   return (
     <div className="space-y-3">
@@ -187,6 +245,8 @@ function OverviewTab({ job, dossier, t, onJobChanged }) {
         <Bar label={t('detail.composite')} value={job.match_score} color="#f59e0b" />
       </div>
       <div className="font-mono text-[11px] text-slate-600">{t('detail.weighting')}</div>
+
+      <RunDanaButton job={job} t={t} onStarted={onJobChanged} />
 
       {job.matched_skills?.length > 0 && (
         <div>
@@ -265,52 +325,122 @@ function AppPackTab({ job, t, previewKey, emptyCta, paneAction }) {
   )
 }
 
-function CvTab({ job, t, previewKey, emptyCta, paneAction, candidateId }) {
-  if (!job.cv_pdf_path && !job.cv_typ_path) return emptyCta || null
-  const cvSrc = api.jobCvUrl(job.id, { candidateId, v: previewKey })
-  const cvDownload = api.jobCvUrl(job.id, { candidateId, download: true })
+function CvTab({ job, t, emptyCta, paneAction, candidateId, runner }) {
+  const hasCv = !!(job.cv_pdf_path || job.cv_typ_path)
+  const hasLetter = !!(job.cover_letter_pdf_path || job.cover_letter_typ_path)
+  if (!hasCv && !hasLetter) return emptyCta || null
+  const working = runner?.agentStatus?.leo?.state === 'WORKING'
+  const starting = runner?.busyKey === 'leo' && !working
+  const busy = working || starting
+  const files = [
+    hasCv && {
+      key: 'cv',
+      document: 'cv',
+      title: t('detail.docCv'),
+      status: job.cv_pdf_path ? t('detail.cvReady') : t('detail.cvTypOnly'),
+      open: api.jobCvUrl(job.id, { candidateId }),
+      download: api.jobCvUrl(job.id, { candidateId, download: true }),
+    },
+    hasLetter && {
+      key: 'letter',
+      document: 'cover_letter',
+      title: t('detail.docCoverLetter'),
+      status: job.cover_letter_pdf_path ? t('detail.coverLetterReady') : t('detail.coverLetterTypOnly'),
+      open: api.jobCoverLetterUrl(job.id, { candidateId }),
+      download: api.jobCoverLetterUrl(job.id, { candidateId, download: true }),
+    },
+  ].filter(Boolean)
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <FileText size={16} className="text-amber-retro shrink-0" />
-          <span className="font-pixel text-[12px] text-amber-retro">
-            {job.cv_status === 'MATERIALS_GENERATED' ? t('detail.cvReady') : t('detail.cvTypOnly')}
-          </span>
+          <span className="font-pixel text-[12px] text-amber-retro">{t('detail.docsList')}</span>
         </div>
-        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          {paneAction}
-          <a
-            href={cvSrc}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-mono text-[12px] px-2 py-1 panel-inset text-slate-200 hover:text-cyan-retro"
-          >
-            {t('detail.openCvNewTab')}
-          </a>
-          <a
-            href={cvDownload}
-            download
-            className="font-mono text-[12px] px-2 py-1 panel-inset text-slate-200 hover:text-emerald-retro"
-          >
-            {t('detail.downloadCv')}
-          </a>
-        </div>
+        {paneAction}
       </div>
-      <iframe src={cvSrc} className="w-full h-[60vh] panel-inset" title="CV Preview" />
+      <ul className="space-y-2">
+        {files.map((file) => (
+          <li key={file.key} className="panel-inset p-3 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-pixel text-[12px] text-slate-100">{file.title}</div>
+                <div className="font-mono text-[11px] text-slate-500 mt-0.5">{file.status}</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <a
+                href={file.open}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[12px] px-2 py-1 panel-inset text-slate-200 hover:text-cyan-retro inline-flex items-center gap-1"
+              >
+                <ExternalLink size={13} />
+                {t('detail.openCvNewTab')}
+              </a>
+              <a
+                href={file.download}
+                download
+                className="font-mono text-[12px] px-2 py-1 panel-inset text-slate-200 hover:text-emerald-retro"
+              >
+                {t('detail.downloadFile')}
+              </a>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => runner?.run?.('leo', { force_refresh: true, document: file.document })}
+                className="font-mono text-[12px] px-2 py-1 panel-inset text-slate-200 hover:text-amber-retro inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                {busy ? <LoaderCircle size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                {t('detail.rerunThisFile')}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
+}
+
+const SHELF_STAGE_LABEL = {
+  low_score: 'shelf.lowScore',
+  expired: 'shelf.expired',
+  unconsiderable: 'shelf.unconsiderable',
+}
+
+function stageLabelKey(stage) {
+  if (SHELF_STAGE_LABEL[stage]) return SHELF_STAGE_LABEL[stage]
+  return `kanban.columns.${stage}`
+}
+
+function idsForStage(jobsByStage, stage) {
+  if (!stage || !jobsByStage) return []
+  return Array.isArray(jobsByStage[stage]) ? jobsByStage[stage] : []
+}
+
+function inferStage(jobsByStage, jobId) {
+  for (const col of PIPELINE_STAGES) {
+    const ids = idsForStage(jobsByStage, col.key)
+    if (ids.some((id) => Number(id) === Number(jobId))) return col.key
+  }
+  for (const key of Object.keys(SHELF_STAGE_LABEL)) {
+    const ids = idsForStage(jobsByStage, key)
+    if (ids.some((id) => Number(id) === Number(jobId))) return key
+  }
+  return null
 }
 
 const TABS = [
   { key: 'overview', labelKey: 'detail.tabs.overview', icon: Building2 },
   { key: 'dossier', labelKey: 'detail.tabs.dossier', icon: ShieldCheck },
-  { key: 'pack', labelKey: 'detail.tabs.pack', icon: ClipboardList },
   { key: 'cv', labelKey: 'detail.tabs.cv', icon: FileText },
+  { key: 'pack', labelKey: 'detail.tabs.pack', icon: ClipboardList },
 ]
 
 export default function DetailDrawer({
   jobId,
+  jobsByStage = {},
+  navStage = null,
   candidateId,
   agentStatus,
   onClose,
@@ -374,6 +504,35 @@ export default function DetailDrawer({
     onStarted: onStageStarted,
   })
 
+  const loopStage = navStage || inferStage(jobsByStage, jobId)
+  const ids = idsForStage(jobsByStage, loopStage)
+  const navIndex = ids.findIndex((id) => Number(id) === Number(jobId))
+  const canNav = ids.length > 1
+  const stageMeta = PIPELINE_STAGES.find((col) => col.key === loopStage)
+  const stageColor = stageMeta?.color || '#94a3b8'
+  const stageName = loopStage ? t(stageLabelKey(loopStage)) : ''
+
+  const goRelative = useCallback((delta) => {
+    if (!ids.length) return
+    const current = navIndex >= 0 ? navIndex : 0
+    const nextId = ids[(current + delta + ids.length) % ids.length]
+    if (nextId != null && Number(nextId) !== Number(jobId)) {
+      onSelectJob?.({ id: nextId }, loopStage)
+    }
+  }, [ids, navIndex, jobId, onSelectJob, loopStage])
+
+  useEffect(() => {
+    function onKey(event) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      const tag = event.target?.tagName || ''
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
+      event.preventDefault()
+      goRelative(event.key === 'ArrowLeft' ? -1 : 1)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [goRelative])
+
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -382,6 +541,38 @@ export default function DetailDrawer({
           <h3 className="font-pixel text-[13px] text-amber-retro">{t('detail.title')}</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-rose-retro"><X size={20} /></button>
         </div>
+        {loopStage && (
+          <div className="flex items-center gap-2 px-3 py-2 border-b-2 border-ink-700">
+            <button
+              type="button"
+              onClick={() => goRelative(-1)}
+              disabled={!canNav}
+              className="text-slate-400 hover:text-amber-retro p-1 disabled:opacity-30 disabled:hover:text-slate-400 shrink-0"
+              title={t('detail.prevInStage')}
+              aria-label={t('detail.prevInStage')}
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <div className="flex-1 min-w-0 text-center">
+              <div className="font-pixel text-[12px] truncate" style={{ color: stageColor }}>
+                {stageName}
+              </div>
+              <div className="font-mono text-[12px] text-slate-500">
+                {ids.length ? `${navIndex >= 0 ? navIndex + 1 : '—'} / ${ids.length}` : '—'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => goRelative(1)}
+              disabled={!canNav}
+              className="text-slate-400 hover:text-amber-retro p-1 disabled:opacity-30 disabled:hover:text-slate-400 shrink-0"
+              title={t('detail.nextInStage')}
+              aria-label={t('detail.nextInStage')}
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+        )}
 
         <div className="flex border-b-2 border-ink-700">
           {TABS.map((tb) => {
@@ -436,6 +627,16 @@ export default function DetailDrawer({
                   }}
                 />
               )}
+              {tab === 'cv' && (
+                <CvTab
+                  job={job}
+                  t={t}
+                  candidateId={candidateId}
+                  runner={runner}
+                  emptyCta={<StageEmptyCta agentKey="leo" runner={runner} />}
+                  paneAction={<StagePaneAction agentKey="leo" runner={runner} />}
+                />
+              )}
               {tab === 'pack' && (
                 <AppPackTab
                   job={job}
@@ -443,16 +644,6 @@ export default function DetailDrawer({
                   previewKey={previewKey}
                   emptyCta={<StageEmptyCta agentKey="clara" runner={runner} />}
                   paneAction={<StagePaneAction agentKey="clara" runner={runner} />}
-                />
-              )}
-              {tab === 'cv' && (
-                <CvTab
-                  job={job}
-                  t={t}
-                  previewKey={previewKey}
-                  candidateId={candidateId}
-                  emptyCta={<StageEmptyCta agentKey="leo" runner={runner} />}
-                  paneAction={<StagePaneAction agentKey="leo" runner={runner} />}
                 />
               )}
             </>

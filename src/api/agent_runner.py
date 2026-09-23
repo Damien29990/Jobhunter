@@ -112,6 +112,22 @@ class PipelineRuntime:
     _thread: Optional[threading.Thread] = None
 
 
+class AgentFollowUpRequest:
+    """Minimal run request so Dana/Leo/Clara receive a job_id after Rex ingest."""
+
+    def __init__(self, base, job_id: int) -> None:
+        self.candidate_id = getattr(base, "candidate_id", None)
+        self.min_score = getattr(base, "min_score", None)
+        self.query = None
+        self.job_url = None
+        self.company = getattr(base, "company", None)
+        self.job_id = job_id
+        self.force_refresh = False
+        self.force = False
+        self.template = getattr(base, "template", None)
+        self.document = None
+
+
 class AgentRunner:
     """Thread-safe singleton-ish runner. One in-flight run per agent."""
 
@@ -150,7 +166,10 @@ class AgentRunner:
         if agent_key == "rex":
             if req.min_score is not None:
                 cmd += ["--min-score", str(req.min_score)]
-            if req.query:
+            job_url = (getattr(req, "job_url", None) or "").strip()
+            if job_url:
+                cmd += ["--job-url", job_url]
+            elif req.query:
                 cmd += ["--query", req.query]
             if accepts_profile:
                 cmd += ["--profile", str(self.resolve_profile_path(req.candidate_id))]
@@ -159,6 +178,8 @@ class AgentRunner:
                 cmd += ["--min-score", str(req.min_score)]
             if req.force_refresh:
                 cmd += ["--force-refresh"]
+            if getattr(req, "force", False):
+                cmd += ["--force"]
             if req.job_id is not None:
                 cmd += ["--job-id", str(req.job_id)]
             if req.company:
@@ -172,6 +193,11 @@ class AgentRunner:
                 cmd += ["--min-score", str(req.min_score)]
             if getattr(req, "template", None):
                 cmd += ["--template", str(req.template)]
+            if req.job_id is not None:
+                cmd += ["--force"]
+            document = (getattr(req, "document", None) or "").strip().lower()
+            if document in ("cv", "cover_letter"):
+                cmd += ["--document", document]
         elif agent_key == "clara":
             if req.job_id is not None:
                 cmd += ["--job-id", str(req.job_id)]
@@ -179,6 +205,8 @@ class AgentRunner:
                 cmd += ["--company", req.company]
             if req.min_score is not None:
                 cmd += ["--min-score", str(req.min_score)]
+            if req.job_id is not None and req.force_refresh:
+                cmd += ["--force"]
         elif agent_key == "milo":
             if req.query:
                 cmd += ["--cv", req.query]  # reuse query field for CV path
@@ -234,19 +262,29 @@ class AgentRunner:
         log_system(f"{rt.character} triggered: {rt.message}", level="START")
 
         t = threading.Thread(
-            target=self._watch, args=(agent_key, proc), daemon=True
+            target=self._watch, args=(agent_key, proc, req), daemon=True
         )
         with self._lock:
             rt._thread = t
         t.start()
         return {"ok": True, "pid": proc.pid, "command": " ".join(cmd)}
 
-    def _watch(self, agent_key: str, proc: subprocess.Popen) -> None:
+    def _watch(self, agent_key: str, proc: subprocess.Popen, req=None) -> None:
         rt = self._rt[agent_key]
+        ingest: Optional[dict] = None
+        should_follow = False
+        follow_id: Optional[int] = None
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip("\n")
+                if line.startswith("JOBHUNTER_INGEST "):
+                    try:
+                        payload = json.loads(line[len("JOBHUNTER_INGEST "):])
+                    except json.JSONDecodeError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        ingest = payload
                 with self._lock:
                     rt.tail.append(line)
                     parsed = _parse_tokens_line(line)
@@ -271,23 +309,100 @@ class AgentRunner:
                 f"{rt.character} exited code {rc}",
                 level="EXIT" if rc == 0 else "ERROR",
             )
+            should_follow = (
+                agent_key == "rex"
+                and rc in (0, None)
+                and isinstance(ingest, dict)
+                and ingest.get("ok")
+                and ingest.get("suitable")
+                and ingest.get("job_id") is not None
+            )
+            follow_id = int(ingest["job_id"]) if should_follow else None
+        if should_follow and follow_id is not None:
+            threading.Thread(
+                target=self._followup_pipeline_for_job,
+                args=(follow_id, req),
+                daemon=True,
+            ).start()
+
+    def _followup_pipeline_for_job(self, job_id: int, req) -> None:
+        """After a suitable pasted listing, run Dana → Leo → Clara for that job.
+
+        Skips Milo/Rex. Waits if an agent is already WORKING.
+        # Ref: Dana composite gate — ingest only follows when suitable=true
+        """
+        with self._lock:
+            if self._pipeline.state == "RUNNING":
+                log_system(
+                    f"INGEST follow-up skipped for job {job_id}: full pipeline running",
+                    level="WARN",
+                )
+                return
+        follow = AgentFollowUpRequest(req, job_id)
+        log_system(f"INGEST follow-up Dana→Leo→Clara for job {job_id}", level="START")
+        for key in ("dana", "leo", "clara"):
+            if not self._wait_agent_idle(key, timeout_s=900):
+                log_system(f"INGEST follow-up timed out waiting for {key}", level="ERROR")
+                return
+            result = self.start(key, follow)
+            if not result.get("ok"):
+                log_system(
+                    f"INGEST follow-up could not start {key}: {result.get('error')}",
+                    level="ERROR",
+                )
+                return
+            if not self._wait_agent_idle(key, timeout_s=1800):
+                log_system(f"INGEST follow-up timed out in {key}", level="ERROR")
+                return
+            with self._lock:
+                failed = self._rt[key].state == "FAILED"
+            if failed:
+                log_system(f"INGEST follow-up stopped at {key}", level="ERROR")
+                return
+        log_system(f"INGEST follow-up finished for job {job_id}", level="EXIT")
+
+    def _wait_agent_idle(self, agent_key: str, timeout_s: float) -> bool:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            with self._lock:
+                busy = self._rt[agent_key].state == "WORKING"
+            if not busy:
+                return True
+            time.sleep(0.5)
+        return False
 
     # -- status -------------------------------------------------------------
 
     def status(self, agent_key: str) -> dict:
         extra = _load_telemetry_tokens(agent_key)
+        overlay = {}
+        try:
+            from run_presence import snapshot
+            overlay = snapshot().get(agent_key) or {}
+        except Exception:
+            overlay = {}
         with self._lock:
             rt = self._rt[agent_key]
             prompt = rt.prompt_tokens or extra.get("prompt_tokens", 0)
             completion = rt.completion_tokens or extra.get("completion_tokens", 0)
             total = rt.total_tokens or extra.get("total_tokens", 0)
+            state = rt.state
+            message = rt.message
+            started_at = rt.started_at
+            if overlay.get("state") == "WORKING":
+                state = "WORKING"
+                message = overlay.get("message") or message
+                started_at = overlay.get("started_at") or started_at
+            elif overlay.get("state") == "FAILED" and state != "WORKING":
+                state = "FAILED"
+                message = overlay.get("message") or message
             return {
                 "agent": agent_key,
                 "character": rt.character,
-                "state": rt.state,
+                "state": state,
                 "pid": rt.pid,
-                "started_at": rt.started_at,
-                "message": rt.message,
+                "started_at": started_at,
+                "message": message,
                 "last_lines": list(rt.tail),
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,

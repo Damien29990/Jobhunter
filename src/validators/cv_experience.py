@@ -83,23 +83,80 @@ def format_period(start: tuple[int, int] | None, end: tuple[int, int] | None, pr
     return left or right
 
 
-def normalize_experience_list(items: list[Any]) -> list[dict[str, Any]]:
-    """Fix reversed dates and sort most-recent role first.
+def iter_experience_roles(job: dict) -> list[dict]:
+    """Yield title stints for a company row (promotions live under roles).
 
-    # Ref: HK CV convention — reverse chronological
+    # Ref: same-employer title change — each role has its own period
+    """
+    if not isinstance(job, dict):
+        return []
+    nested = job.get("roles")
+    if isinstance(nested, list) and any(isinstance(item, dict) for item in nested):
+        return [dict(item) for item in nested if isinstance(item, dict)]
+    highlights = job.get("highlights")
+    skills = job.get("skills_used")
+    return [{
+        "role": job.get("role") or "",
+        "period": job.get("period") or "",
+        "highlights": list(highlights) if isinstance(highlights, list) else [],
+        "skills_used": list(skills) if isinstance(skills, list) else [],
+    }]
+
+
+def _period_sort_key(period: str) -> tuple[str, tuple[tuple[int, int], tuple[int, int]]]:
+    start, end, _present = parse_period_bounds(period)
+    pretty = format_period(start, end, _present)
+    end_key = end or start or (0, 0)
+    start_key = start or (0, 0)
+    return pretty, (end_key, start_key)
+
+
+def normalize_experience_list(items: list[Any]) -> list[dict[str, Any]]:
+    """Fix reversed dates and sort most-recent company / title first.
+
+    # Ref: HK CV convention — reverse chronological; promotions share company
     """
     cleaned: list[dict[str, Any]] = []
     for raw in items or []:
         if not isinstance(raw, dict):
             continue
         row = dict(raw)
-        start, end, present = parse_period_bounds(str(row.get("period") or ""))
-        if start or end or present:
-            pretty = format_period(start, end, present)
+        nested = row.get("roles")
+        if isinstance(nested, list) and any(isinstance(item, dict) for item in nested):
+            roles: list[dict[str, Any]] = []
+            for item in nested:
+                if not isinstance(item, dict):
+                    continue
+                role = dict(item)
+                pretty, (end_key, start_key) = _period_sort_key(str(role.get("period") or ""))
+                if pretty:
+                    role["period"] = pretty
+                role["_sort_end"] = end_key
+                role["_sort_start"] = start_key
+                roles.append(role)
+            roles.sort(key=lambda r: (r["_sort_end"], r["_sort_start"]), reverse=True)
+            for role in roles:
+                role.pop("_sort_end", None)
+                role.pop("_sort_start", None)
+            row["roles"] = roles
+            if roles:
+                latest = roles[0]
+                row["role"] = latest.get("role")
+                row["period"] = latest.get("period")
+                row["highlights"] = latest.get("highlights") or []
+                row["skills_used"] = latest.get("skills_used") or []
+                pretty, (end_key, start_key) = _period_sort_key(str(latest.get("period") or ""))
+                row["_sort_end"] = end_key
+                row["_sort_start"] = start_key
+            else:
+                row["_sort_end"] = (0, 0)
+                row["_sort_start"] = (0, 0)
+        else:
+            pretty, (end_key, start_key) = _period_sort_key(str(row.get("period") or ""))
             if pretty:
                 row["period"] = pretty
-        row["_sort_end"] = end or start or (0, 0)
-        row["_sort_start"] = start or (0, 0)
+            row["_sort_end"] = end_key
+            row["_sort_start"] = start_key
         cleaned.append(row)
     cleaned.sort(key=lambda r: (r["_sort_end"], r["_sort_start"]), reverse=True)
     for row in cleaned:

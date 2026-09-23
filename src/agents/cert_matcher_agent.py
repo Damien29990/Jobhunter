@@ -54,6 +54,8 @@ _CHANNEL_ALIASES = {
     "successfactors": "SuccessFactors",
     "jobsdb": "JobsDB",
     "ctgoodjobs": "CTgoodjobs",
+    "talentjobseeker": "HKSTP Talent Pool",
+    "hkstp": "HKSTP Talent Pool",
     "linkedin": "LinkedIn",
     "lever": "Lever",
     "smartrecruiters": "SmartRecruiters",
@@ -147,11 +149,24 @@ class ApplicationReadinessPack(BaseModel):
         default=None,
         description="Whether a code demo / micro-repo is recommended for this job and what it should showcase",
     )
+    how_to_apply: List[str] = Field(
+        default_factory=list,
+        description="Clear numbered instructions: where to apply, what to attach, what to type",
+    )
+    task_checklist: List[str] = Field(
+        default_factory=list,
+        description="Tick-box tasks the candidate must complete before submit",
+    )
     final_human_action_items: List[str] = Field(
         description="Step-by-step checklist for the candidate before clicking submit"
     )
 
-    @field_validator("matched_credentials", "final_human_action_items")
+    @field_validator(
+        "matched_credentials",
+        "final_human_action_items",
+        "how_to_apply",
+        "task_checklist",
+    )
     @classmethod
     def coerce_lists(cls, value):
         if value is None:
@@ -170,6 +185,10 @@ class ApplicationReadinessPack(BaseModel):
             raise ValueError("job_title must not be empty")
         if not (self.job_url or "").strip():
             raise ValueError("job_url must not be empty")
+        if not self.task_checklist and self.final_human_action_items:
+            self.task_checklist = list(self.final_human_action_items)
+        if not self.final_human_action_items and self.task_checklist:
+            self.final_human_action_items = list(self.task_checklist)
         return self
 
 
@@ -209,6 +228,8 @@ def coerce_readiness_payload(
     payload.setdefault("matched_credentials", [])
     payload.setdefault("demo_recommendation", None)
     payload.setdefault("final_human_action_items", [])
+    payload.setdefault("how_to_apply", [])
+    payload.setdefault("task_checklist", [])
 
     audit = payload["submission_audit"]
     if isinstance(audit, str):
@@ -229,6 +250,12 @@ def coerce_readiness_payload(
     for alt in ("action_items", "checklist", "final_action_items"):
         if alt in payload and not payload["final_human_action_items"]:
             payload["final_human_action_items"] = payload[alt]
+    for alt in ("how_to", "instructions", "apply_steps"):
+        if alt in payload and not payload["how_to_apply"]:
+            payload["how_to_apply"] = payload[alt]
+    for alt in ("tasks", "todo", "task_list"):
+        if alt in payload and not payload["task_checklist"]:
+            payload["task_checklist"] = payload[alt]
 
     return payload
 
@@ -329,6 +356,7 @@ class CertMatcherAgent:
             FROM job_postings
             WHERE match_score >= ?
               AND cv_status = ?
+              AND COALESCE(application_ready, 0) = 0
             ORDER BY match_score DESC
             """,
             (min_score, STATUS_GENERATED),
@@ -348,6 +376,31 @@ class CertMatcherAgent:
                 }
             )
         return rows
+
+    def fetch_job(self, job_id: int) -> Optional[dict]:
+        """Load one job for a Clara re-run even if application_ready is already set."""
+        cursor = self.db_manager.db.execute(
+            """
+            SELECT id, job_url, job_title, company_name, jd_snippet,
+                   match_score, cv_pdf_path, cv_typ_path
+            FROM job_postings
+            WHERE id = ?
+            """,
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "job_url": row[1],
+            "job_title": row[2],
+            "company_name": row[3],
+            "jd_snippet": row[4] or "",
+            "match_score": row[5],
+            "cv_pdf_path": row[6],
+            "cv_typ_path": row[7],
+        }
 
     # -- deterministic channel detection --------------------------------------
 
@@ -373,6 +426,8 @@ class CertMatcherAgent:
             channel = "JobsDB"
         elif "ctgoodjobs.hk" in host:
             channel = "CTgoodjobs"
+        elif "talentjobseeker.hkstp.org" in host:
+            channel = "HKSTP Talent Pool"
         elif "linkedin.com" in host and "/jobs" in path:
             channel = "LinkedIn"
         elif "lever.co" in host:
@@ -424,12 +479,13 @@ Strict Rules:
 7. demo_recommendation: if the role is backend / IoT / AI, recommend a small
    code demo or micro-repo and state what it should showcase (time-series,
    edge telemetry, agent orchestration). Otherwise leave it null.
-8. BILINGUAL OUTPUT: Write submission_audit.special_submission_instructions, form_screening_traps, matched_credentials (relevance_to_role, recommended_action), demo_recommendation, and final_human_action_items in BOTH English and Traditional Chinese. Format: "English. 繁體中文。" Each list item bilingual.
-9. final_human_action_items: ordered step-by-step checklist the candidate
-   follows before clicking submit (attach PDFs, fill portal fields, etc.).
-10. Output must be a single valid JSON object matching the
+8. BILINGUAL OUTPUT: Write how_to_apply, task_checklist, submission_audit.special_submission_instructions, form_screening_traps, matched_credentials (relevance_to_role, recommended_action), demo_recommendation, and final_human_action_items in BOTH English and Traditional Chinese. Format: "English. 繁體中文。" Each list item bilingual.
+9. how_to_apply: 4-8 numbered instructions a tired candidate can follow without guessing. Start each step with a verb (Open, Log in, Attach, Type, Quote, Submit). Name the portal, the exact URL or email, which files to upload (CV / cover letter), and any JD-specific subject line or reference code.
+10. task_checklist: short tick-box tasks for the same job (one action per line), covering documents, form fields (salary / notice / visa), and a final "submit and save confirmation" step. Keep each item under 120 characters.
+11. final_human_action_items: same ordered list as task_checklist (compat).
+12. Output must be a single valid JSON object matching the
    ApplicationReadinessPack schema. No markdown fences.
-11. JSON hygiene: escape every double-quote inside strings; no trailing
+13. JSON hygiene: escape every double-quote inside strings; no trailing
     commas; keep each string under 280 characters; keep each list at most
     8 items.
 
@@ -500,41 +556,66 @@ JSON Schema:
 
         demo = pack.demo_recommendation or "No code demo required for this role."
 
-        actions = pack.final_human_action_items or []
-        if actions:
-            actions_section = "\n".join(
-                f"{i}. {item}" for i, item in enumerate(actions, 1)
+        how_to = [str(item).strip() for item in (pack.how_to_apply or []) if str(item).strip()]
+        if not how_to:
+            how_to = [
+                f"Open the {audit.application_channel} listing: {audit.submission_target}",
+            ]
+            if audit.special_submission_instructions:
+                how_to.append(
+                    f"Follow this JD instruction: {audit.special_submission_instructions}"
+                )
+            for doc in audit.required_documents or []:
+                how_to.append(f"Attach or upload: {doc}")
+            how_to.append(
+                "Fill salary, notice period, and visa / HK residency fields before Submit."
             )
-        else:
-            actions_section = "_No action items recorded._"
+            how_to.append("Click Submit and save the confirmation screen or email.")
+        how_section = "\n".join(
+            f"{i}. {item}" for i, item in enumerate(how_to, 1)
+        )
 
-        return f"""# {pack.company_name} — Application Hand-in Checklist
+        tasks = [
+            str(item).strip()
+            for item in (pack.task_checklist or pack.final_human_action_items or [])
+            if str(item).strip()
+        ]
+        if not tasks:
+            tasks = list(audit.required_documents or [])
+            tasks.append("Fill screening questions (salary, notice, visa).")
+            tasks.append("Submit and keep the confirmation.")
+        tasks_section = _checkbox(tasks)
+
+        return f"""# {pack.company_name} — Application pack
 
 **Role:** {pack.job_title}
 **Job URL:** {pack.job_url}
 **Application Channel:** {audit.application_channel}
 **Submission Target:** {audit.submission_target}
 
-## Required Documents
-{_checkbox(audit.required_documents)}
+## How to apply
+{how_section}
 
-## Optional / Enhancer Documents
-{_checkbox(audit.optional_documents)}
+## Task checklist
+{tasks_section}
 
-## Form Screening Traps
-{_traps(audit.form_screening_traps)}
-
-## Special Submission Instructions
+## Special submission instructions
 {audit.special_submission_instructions or "(none stated in the JD)"}
 
-## Matched Credentials & Talking Points
+## Required documents
+{_checkbox(audit.required_documents)}
+
+## Optional / enhancer documents
+{_checkbox(audit.optional_documents)}
+
+## Form screening traps
+{_traps(audit.form_screening_traps)}
+
+## Matched credentials and talking points
 {creds_section}
 
-## Demo Recommendation
+## Demo recommendation
 {demo}
-
-## Final Human Action Items
-{actions_section}
 """
 
     def export_checklist(self, pack: ApplicationReadinessPack) -> Path:
@@ -619,18 +700,26 @@ JSON Schema:
         min_score: int = MIN_MATCH_SCORE,
         job_id: Optional[int] = None,
         company: Optional[str] = None,
+        force: bool = False,
     ) -> int:
         """Audit application readiness for all jobs whose CV is already generated."""
-        jobs = self.list_ready_jobs(min_score=min_score)
-        if job_id is not None:
-            jobs = [j for j in jobs if j["id"] == job_id]
+        jobs: List[dict] = []
+        if job_id is not None and force:
+            loaded = self.fetch_job(job_id)
+            if loaded:
+                jobs = [loaded]
+        else:
+            jobs = self.list_ready_jobs(min_score=min_score)
+            if job_id is not None:
+                jobs = [j for j in jobs if j["id"] == job_id]
         if company:
             key = company.strip().lower()
             jobs = [j for j in jobs if key in (j["company_name"] or "").lower()]
         if not jobs:
             print(
                 "ℹ️  No ready jobs found. Need job_postings.match_score >= "
-                f"{min_score} with cv_status = 'MATERIALS_GENERATED'."
+                f"{min_score} with cv_status = 'MATERIALS_GENERATED' "
+                "and application_ready not already set."
             )
             return 0
         print(f"📋 {len(jobs)} ready job(s) queued for application audit.")
@@ -661,6 +750,11 @@ if __name__ == "__main__":
         "--company", default=None, help="Filter jobs by company name substring"
     )
     parser.add_argument("--min-score", type=int, default=MIN_MATCH_SCORE)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild the checklist even if application_ready is already set",
+    )
     args = parser.parse_args()
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -670,5 +764,10 @@ if __name__ == "__main__":
         raise SystemExit("Set DEEPSEEK_API_KEY in the environment or a .env file.")
     print(f"Using DeepSeek {os.environ.get('DEEPSEEK_MODEL', DEEPSEEK_CHAT_MODEL)} @ {DEEPSEEK_BASE_URL}")
     agent = CertMatcherAgent(deepseek_api_key=deepseek_key)
-    agent.run_pipeline(min_score=args.min_score, job_id=args.job_id, company=args.company)
+    agent.run_pipeline(
+        min_score=args.min_score,
+        job_id=args.job_id,
+        company=args.company,
+        force=args.force,
+    )
     finalize_usage("Clara")

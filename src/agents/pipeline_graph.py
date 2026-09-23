@@ -50,6 +50,29 @@ from pipeline_gates import should_continue_after_dana, should_continue_after_rex
 MAX_TYPST_RETRIES = 3
 
 
+def _presence_node(agent_key: str):
+    """Mark dashboard WORKING for the whole LangGraph node."""
+
+    def deco(fn):
+        def wrapped(state: dict) -> dict:
+            from run_presence import mark_idle, mark_working
+
+            mark_working(agent_key, f"LangGraph: {agent_key}_node")
+            failed = True
+            try:
+                out = fn(state)
+                failed = False
+                return out
+            finally:
+                mark_idle(agent_key, failed=failed)
+
+        wrapped.__name__ = fn.__name__
+        wrapped.__doc__ = fn.__doc__
+        return wrapped
+
+    return deco
+
+
 def _record_metrics(
     node_name: str,
     start: float,
@@ -96,6 +119,7 @@ def _notify_agent(agent_name: str, emoji: str, summary: str, details: list = Non
 # Node functions — each wraps existing agent logic
 # ---------------------------------------------------------------------------
 
+@_presence_node("milo")
 def milo_node(state: dict) -> dict:
     """Agent 0 — Exploratory Summarizer. Extracts PAC from CV + chat.
 
@@ -137,6 +161,7 @@ def milo_node(state: dict) -> dict:
     return state
 
 
+@_presence_node("rex")
 def rex_node(state: dict) -> dict:
     """Agent 1 — Rex scanner. Broad cross-domain search using PAC as soft guidance.
 
@@ -208,6 +233,7 @@ def rex_node(state: dict) -> dict:
     return state
 
 
+@_presence_node("dana")
 def dana_node(state: dict) -> dict:
     """Agent 2 — Dana researcher. Nuanced fit assessment + background check."""
     start = time.time()
@@ -250,6 +276,7 @@ def dana_node(state: dict) -> dict:
     return state
 
 
+@_presence_node("leo")
 def leo_node(state: dict) -> dict:
     """Agent 3 — Leo generator. Tailors CV and renders Typst. Cyclic retry on compile error."""
     start = time.time()
@@ -280,6 +307,7 @@ def leo_node(state: dict) -> dict:
     return state
 
 
+@_presence_node("clara")
 def clara_node(state: dict) -> dict:
     """Agent 4 — Clara auditor. Application readiness + checklist export."""
     start = time.time()
@@ -318,7 +346,7 @@ def after_rex(state: dict) -> str:
     try:
         db = JobDBManager(db_path=DEFAULT_DB_PATH)
         pending = len(
-            db.list_companies_pending_diligence(min_score=80, include_existing=False)
+            db.list_companies_pending_diligence(min_score=80, include_existing=True)
         )
     except Exception as exc:
         log_activity("Rex", f"Pending-queue check failed: {exc}", level="WARN")

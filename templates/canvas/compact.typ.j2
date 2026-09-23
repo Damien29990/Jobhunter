@@ -12,7 +12,7 @@
 #align(center)[
   #text(size: 18pt, weight: "bold")[{{ candidate_name | typ_escape }}]
   #v(0.15em)
-  #text(size: 9pt)[{{ contact_line | typ_escape }}]
+  #text(size: 9pt)[{{ contact_line }}]
 ]
 
 #v(0.25em)
@@ -43,7 +43,8 @@
 = Projects
 
 {% for project in projects %}
-#text(weight: "bold")[{{ project.name | typ_escape }}] — {{ project.description | typ_escape }}
+#text(weight: "bold")[{{ project.name | typ_escape }}{% if project.role %} — {{ project.role | typ_escape }}{% endif %}]{% if project.is_side_project %} (Side project){% elif project.employer %} ({{ project.employer | typ_escape }}){% endif %}{% if project.period %} · {{ project.period | typ_escape }}{% endif %}
+{{ project.description | typ_escape }}
 #text(size: 8.5pt)[Stack: {{ project.tech_stack | join(", ") | typ_escape }}]
 {% if not loop.last %}#v(0.15em){% endif %}
 {% endfor %}
@@ -52,6 +53,13 @@
 
 {% for cert in certifications %}- {{ cert | typ_escape }}
 {% endfor %}
+
+{% if awards %}
+= Awards
+
+{% for award in awards %}- {{ award | typ_escape }}
+{% endfor %}
+{% endif %}
 
 = Education
 

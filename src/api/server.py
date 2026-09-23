@@ -34,8 +34,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 _AGENTS_DIR = (Path(__file__).resolve().parent.parent / "agents")
+_VALIDATORS_DIR = (Path(__file__).resolve().parent.parent / "validators")
 if str(_AGENTS_DIR) not in sys.path:
     sys.path.insert(0, str(_AGENTS_DIR))
+if str(_VALIDATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(_VALIDATORS_DIR))
 
 from . import gates  # noqa: E402
 from .agent_runner import LOG_FILE, runner  # noqa: E402
@@ -45,7 +48,7 @@ from .models import (  # noqa: E402
     AgentRunRequest, AgentStatus, AgentStatusMap, CandidateProfile,
     CompanyDossierOut, CreateProfileRequest, DossierPayload, FunnelStats,
     HealthOut, JobCheckResult, JobListResponse, JobOut, JobShelfResponse,
-    JobStatusUpdate, Profile, TelegramBotOut,
+    JobStatusUpdate, LinkedInImportRequest, Profile, TelegramBotOut,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -243,6 +246,10 @@ def _ensure_expired_column() -> None:
             conn.execute("ALTER TABLE job_postings ADD COLUMN expired BOOLEAN DEFAULT 0")
         if "user_status" not in cols:
             conn.execute("ALTER TABLE job_postings ADD COLUMN user_status TEXT")
+        if "cover_letter_pdf_path" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN cover_letter_pdf_path TEXT")
+        if "cover_letter_typ_path" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN cover_letter_typ_path TEXT")
         conn.commit()
     except Exception:
         pass
@@ -280,11 +287,12 @@ def _rewrite_phenom_job_urls(conn: sqlite3.Connection) -> None:
             continue
 
 
-def _active_job_clause() -> tuple[str, list]:
+def _active_job_clause(alias: str = "") -> tuple[str, list]:
     """SQL fragment: visible on the main kanban (score ≥ 35, not expired, not unconsiderable)."""
+    prefix = f"{alias}." if alias else ""
     return (
-        "COALESCE(match_score, 0) >= ? AND COALESCE(expired, 0) = 0 "
-        "AND UPPER(COALESCE(user_status, '')) != ?",
+        f"COALESCE({prefix}match_score, 0) >= ? AND COALESCE({prefix}expired, 0) = 0 "
+        f"AND UPPER(COALESCE({prefix}user_status, '')) != ?",
         [gates.DASHBOARD_MIN_DISPLAY_SCORE, gates.USER_STATUS_UNCONSIDERABLE],
     )
 
@@ -457,10 +465,19 @@ def create_candidate(req: CreateProfileRequest) -> Profile:
     path = _profile_path_for(req.id)
     if path.is_file():
         raise HTTPException(409, f"profile {req.id!r} already exists")
+    linkedin_value = ""
+    if req.linkedin and str(req.linkedin).strip():
+        from contact_links import is_valid_linkedin_username, linkedin_handle
+
+        if not is_valid_linkedin_username(req.linkedin):
+            raise HTTPException(400, "invalid LinkedIn username or /in/ URL")
+        linkedin_value = linkedin_handle(req.linkedin)
     profile = Profile(
         basics={"name": req.name, "location": req.location or "Hong Kong",
+                "linkedin": linkedin_value,
                 "target_roles": [], "min_expected_salary_hkd": None, "languages": []},
         education=[], technical_skills={}, experience=[], projects=[], certifications=[],
+        languages=[], awards=[],
     )
     data = profile.model_dump(mode="json")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,13 +485,25 @@ def create_candidate(req: CreateProfileRequest) -> Profile:
     return profile
 
 
-def _merge_parsed_profile(profile_path: Path, parsed: dict) -> dict:
-    """Merge Ollama CV parse output into the candidate JSON on disk."""
+def _merge_parsed_profile(profile_path: Path, parsed: dict, *, fill_empty: bool = False) -> dict:
+    """Merge CV or LinkedIn parse output into the candidate JSON on disk.
+
+    fill_empty=True (LinkedIn bootstrap) only fills blank fields so a later
+    Milo CV import can still replace experience/education.
+    # Ref: LinkedIn username bootstrap + import_cv
+    """
     if profile_path.is_file():
         existing = json.loads(profile_path.read_text(encoding="utf-8"))
     else:
         existing = {}
-    for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications"):
+    if fill_empty:
+        from linkedin_bootstrap import merge_fill_empty
+
+        existing = merge_fill_empty(existing, parsed)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        return existing
+    for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications", "languages", "awards"):
         if parsed.get(key):
             if key == "basics":
                 existing.setdefault("basics", {}).update(parsed["basics"])
@@ -546,6 +575,42 @@ async def import_cv_endpoint(request: Request, candidate_id: Optional[str] = Que
     readme_path = agent.refresh_readme(source="cv_import")
     existing["milo_readme_path"] = str(readme_path)
     return existing
+
+
+@app.post("/api/candidates/import-linkedin")
+def import_linkedin_endpoint(req: LinkedInImportRequest) -> dict:
+    """Seed a basic profile from a LinkedIn vanity username, then Milo CV can enrich it.
+
+    # Ref: linkedin_bootstrap.bootstrap_from_linkedin — Tavily public text, no login
+    """
+    from linkedin_bootstrap import bootstrap_from_linkedin
+    from talent_scout_agent import now_hk_iso
+
+    try:
+        boot = bootstrap_from_linkedin(req.username)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cid = req.candidate_id or "default"
+    profile_path = _profile_path_for(cid)
+    existing = _merge_parsed_profile(profile_path, boot.parsed, fill_empty=True)
+    imports = list(existing.get("linkedin_imports") or [])
+    imports.append({
+        "handle": boot.handle,
+        "url": boot.url,
+        "source": boot.source,
+        "public_text_chars": boot.public_text_chars,
+        "imported_at": now_hk_iso(),
+    })
+    existing["linkedin_imports"] = imports[-20:]
+    profile_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    from milo_intake import MiloIntakeAgent
+    agent = MiloIntakeAgent(profile_path=profile_path)
+    agent.refresh_readme(source="linkedin_import")
+    data = json.loads(profile_path.read_text(encoding="utf-8"))
+    data["linkedin_source"] = boot.source
+    data["linkedin_url"] = boot.url
+    log_system(f"LinkedIn bootstrap {boot.source} for {cid}: {boot.handle}")
+    return data
 
 
 @app.post("/api/milo/chat")
@@ -718,7 +783,7 @@ def jobs_summary(
 
     Declared BEFORE /api/jobs/{job_id} so the dynamic {job_id} route
     doesn't shadow it. Stage filters mirror each agent's "next step":
-      dana  -> jobs pending vetting (score gate, no dossier yet)
+      dana  -> kanban Discovered + Vetted (manual / re-research)
       leo   -> vetted-PROCEED jobs with no CV yet
       clara -> jobs with a CV (MATERIALS_GENERATED), not yet application_ready
       all/None -> every job
@@ -726,26 +791,40 @@ def jobs_summary(
     conn = _connect()
     try:
         if stage == "dana":
-            rows = conn.execute(
+            active_sql, active_params = _active_job_clause("j")
+            raw = conn.execute(
                 "SELECT j.id AS id, j.job_title AS job_title, "
-                "j.company_name AS company_name, j.match_score AS match_score "
+                "j.company_name AS company_name, j.match_score AS match_score, "
+                "j.cv_status AS cv_status, j.application_ready AS application_ready, "
+                "d.vetting_verdict AS vetting_verdict "
                 "FROM job_postings j "
                 "LEFT JOIN company_dossiers d ON d.company_name = j.company_name "
-                "WHERE d.id IS NULL "
-                "AND (j.match_score >= ? OR j.transferability_score >= ?) "
-                "ORDER BY COALESCE(j.expired,0) ASC, COALESCE(j.match_score,0) DESC, j.created_at DESC LIMIT ?",
-                (gates.AGENT3_CV_MIN_SCORE, gates.PIVOT_TRANSFERABILITY_FLOOR, limit),
+                f"WHERE {active_sql} "
+                "ORDER BY COALESCE(j.expired,0) ASC, COALESCE(j.match_score,0) DESC, j.created_at DESC",
+                tuple(active_params),
             ).fetchall()
+            rows = [
+                r
+                for r in raw
+                if gates.kanban_column(
+                    r["match_score"],
+                    r["cv_status"],
+                    bool(r["application_ready"]),
+                    r["vetting_verdict"],
+                )
+                in gates.DANA_JOB_SELECT_STAGES
+            ][:limit]
         elif stage == "leo":
+            active_sql, active_params = _active_job_clause("j")
             rows = conn.execute(
                 "SELECT j.id AS id, j.job_title AS job_title, "
                 "j.company_name AS company_name, j.match_score AS match_score "
                 "FROM job_postings j "
                 "JOIN company_dossiers d ON d.company_name = j.company_name "
-                "WHERE j.match_score >= ? AND d.vetting_verdict = ? "
+                f"WHERE {active_sql} AND d.vetting_verdict = ? "
                 "AND (j.cv_status IS NULL OR j.cv_status = '') "
                 "ORDER BY COALESCE(j.expired,0) ASC, COALESCE(j.match_score,0) DESC, j.created_at DESC LIMIT ?",
-                (gates.AGENT3_CV_MIN_SCORE, gates.AGENT3_CV_REQUIRED_VERDICT, limit),
+                tuple(active_params + [gates.AGENT3_CV_REQUIRED_VERDICT, limit]),
             ).fetchall()
         elif stage == "clara":
             rows = conn.execute(
@@ -974,12 +1053,50 @@ def get_job_cv(
     download: bool = Query(False),
     candidate_id: Optional[str] = Query(None),
 ):
-    from cv_filenames import cv_download_filename
+    return _job_material_file(
+        job_id,
+        candidate_id=candidate_id,
+        download=download,
+        kind="cv",
+        pdf_column="cv_pdf_path",
+        typ_column="cv_typ_path",
+        missing="no CV materials generated for this job yet",
+    )
+
+
+@app.get("/api/jobs/{job_id}/cover-letter")
+def get_job_cover_letter(
+    job_id: int,
+    download: bool = Query(False),
+    candidate_id: Optional[str] = Query(None),
+):
+    return _job_material_file(
+        job_id,
+        candidate_id=candidate_id,
+        download=download,
+        kind="cover_letter",
+        pdf_column="cover_letter_pdf_path",
+        typ_column="cover_letter_typ_path",
+        missing="no cover letter generated for this job yet",
+    )
+
+
+def _job_material_file(
+    job_id: int,
+    *,
+    candidate_id: Optional[str],
+    download: bool,
+    kind: str,
+    pdf_column: str,
+    typ_column: str,
+    missing: str,
+):
+    from cv_filenames import materials_filename
 
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT job_title, cv_pdf_path, cv_typ_path FROM job_postings WHERE id = ?",
+            f"SELECT job_title, {pdf_column}, {typ_column} FROM job_postings WHERE id = ?",
             (job_id,),
         ).fetchone()
         if row is None:
@@ -988,24 +1105,49 @@ def get_job_cv(
         conn.close()
     user_name = _candidate_display_name(candidate_id)
     job_title = row["job_title"] or "job"
-    disposition = "attachment" if download else "inline"
-    pdf = _safe_path(row["cv_pdf_path"])
+    pdf = _safe_path(row[pdf_column])
     if pdf:
-        return FileResponse(
+        return _preview_or_download(
             pdf,
             media_type="application/pdf",
-            filename=cv_download_filename(job_title, user_name, "pdf"),
-            content_disposition_type=disposition,
+            filename=materials_filename(job_title, user_name, kind, "pdf"),
+            download=download,
         )
-    typ = _safe_path(row["cv_typ_path"])
+    typ = _safe_path(row[typ_column])
     if typ:
-        return FileResponse(
+        return _preview_or_download(
             typ,
-            media_type="text/plain",
-            filename=cv_download_filename(job_title, user_name, "typ"),
-            content_disposition_type=disposition,
+            media_type="text/plain; charset=utf-8",
+            filename=materials_filename(job_title, user_name, kind, "typ"),
+            download=download,
         )
-    raise HTTPException(404, "no CV materials generated for this job yet")
+    raise HTTPException(404, missing)
+
+
+def _preview_or_download(
+    path: Path,
+    *,
+    media_type: str,
+    filename: str,
+    download: bool,
+) -> FileResponse:
+    """Iframe / new-tab preview must stay inline; only the Download control attaches.
+
+    Passing `filename=` on FileResponse makes Chrome download PDFs when opening
+    the application-docs tab. Preview therefore omits Content-Disposition filename.
+    """
+    if download:
+        return FileResponse(
+            path,
+            media_type=media_type,
+            filename=filename,
+            content_disposition_type="attachment",
+        )
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 @app.get("/api/jobs/{job_id}/checklist", response_class=HTMLResponse)
@@ -1653,8 +1795,14 @@ def _profile_skill_context(profile: dict) -> dict:
     experience = profile.get("experience") or []
     exp_highlights: list[str] = []
     for e in experience:
-        if isinstance(e, dict):
-            for h in (e.get("highlights") or []):
+        if not isinstance(e, dict):
+            continue
+        nested = e.get("roles")
+        stints = nested if isinstance(nested, list) and nested else [e]
+        for stint in stints:
+            if not isinstance(stint, dict):
+                continue
+            for h in (stint.get("highlights") or []):
                 exp_highlights.append(str(h))
     projects = profile.get("projects") or []
     project_tech: list[str] = []

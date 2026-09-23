@@ -18,9 +18,11 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from listing_filters import (  # noqa: E402
+    display_listing_title,
     is_junk_job_title,
-    listing_text_supports_title,
     listing_url_problem,
+    normalize_listing_url,
+    title_from_job_url,
 )
 from talent_scout_agent import (  # noqa: E402
     DEFAULT_PROFILE_PATH,
@@ -32,6 +34,7 @@ from talent_scout_agent import (  # noqa: E402
     TalentScoutAgent as BaseTalentScoutAgent,
     compute_composite_match_score,
     extract_host,
+    fetch_page_text,
     is_academic_non_job_url,
     is_academic_programme_title,
     is_job_posting_url,
@@ -39,11 +42,14 @@ from talent_scout_agent import (  # noqa: E402
     lexical_embedding,
     now_hk_iso,
     parse_json_payload,
+    passes_dana_composite_gate,
     passes_dual_score_gate,
     prefer_listing_title,
     resolve_employer_name,
     summarize_jd,
 )
+from cv_experience import iter_experience_roles  # noqa: E402
+from system_one import should_evaluate_jd  # noqa: E402
 
 from activity_logger import log_activity  # noqa: E402
 from llm_usage import finalize_usage  # noqa: E402
@@ -349,10 +355,11 @@ def anonymize_profile_dict(raw: dict) -> AnonymizedProfile:
     for job in raw.get("experience") or []:
         if not isinstance(job, dict):
             continue
-        skills.extend(item for item in (job.get("skills_used") or []) if isinstance(item, str))
-        for line in job.get("highlights") or []:
-            if isinstance(line, str) and line.strip():
-                highlights.append(deverticalize_text(redact_pii_text(line, secrets)))
+        for stint in iter_experience_roles(job):
+            skills.extend(item for item in (stint.get("skills_used") or []) if isinstance(item, str))
+            for line in stint.get("highlights") or []:
+                if isinstance(line, str) and line.strip():
+                    highlights.append(deverticalize_text(redact_pii_text(line, secrets)))
     for project in raw.get("projects") or []:
         if not isinstance(project, dict):
             continue
@@ -573,6 +580,18 @@ def compose_track_query(track: CareerSearchTrack) -> str:
     return f"{core} {JOB_SEARCH_CONSTRAINTS}".strip()
 
 
+PENDING_EVAL_REASON = "pending_eval"
+
+
+def _listing_already_scored(reason: str, match_score: object) -> bool:
+    text = (reason or "").strip()
+    if text.startswith("pending_eval"):
+        return False
+    if text.startswith("system_one_skip"):
+        return True
+    return match_score is not None
+
+
 class TalentScoutAgent(BaseTalentScoutAgent):
     """Hong Kong scout that expands career horizons before Tavily search."""
 
@@ -583,6 +602,72 @@ class TalentScoutAgent(BaseTalentScoutAgent):
             if vector:
                 return fit_embedding_dim(vector, EMBEDDING_DIM)
         return lexical_embedding(text, EMBEDDING_DIM)
+
+    def _store_search_jd(
+        self,
+        *,
+        url: str,
+        title: str,
+        content: str,
+        source_lane: str,
+        company_name: str,
+    ) -> Optional[int]:
+        """Persist a searched posting before any DeepSeek score.
+
+        # Ref: every Tavily/JobsDB hit with a real /job URL is stored
+        """
+        snippet = re.sub(r"\s+", " ", content or "").strip()[:4000]
+        stored_title = prefer_listing_title(title, url, title_from_job_url(url) or title)
+        if is_junk_job_title(stored_title):
+            stored_title = title_from_job_url(url) or stored_title or "Untitled role"
+        employer = company_name
+        if not is_usable_company_name(employer):
+            recovered = resolve_employer_name(url, content)
+            if recovered:
+                employer = recovered
+        if not is_usable_company_name(employer):
+            employer = extract_host(url) or "Undisclosed employer"
+        job_record = {
+            "job_url": url,
+            "company_name": employer,
+            "job_title": stored_title,
+            "source_domain": extract_host(url),
+            "source_lane": source_lane or "unknown",
+            "location_mode": "",
+            "salary_range": None,
+            "match_score": 0,
+            "matched_skills": [],
+            "missing_skills": [],
+            "is_direct_hire": False,
+            "recommendation_reason": PENDING_EVAL_REASON,
+            "jd_snippet": snippet or (title or "")[:500],
+            "created_at": now_hk_iso(),
+            "target_industry": "",
+            "hard_skill_match_score": None,
+            "transferability_score": None,
+            "transferable_strengths": [],
+            "career_advisory_note": "",
+        }
+        embedding = self.get_embedding(f"{employer} {stored_title} {snippet[:400]}")
+        try:
+            job_id = self.db_manager.save_job(job_record, embedding)
+        except Exception as exc:
+            print(f"⚠️ [Store skipped] {stored_title}: {exc}")
+            log_activity("Rex", f"Store skipped: {exc}", level="ERROR")
+            return None
+        state = self.db_manager.listing_eval_state(url)
+        if state and not _listing_already_scored(
+            state.get("recommendation_reason") or "",
+            state.get("match_score"),
+        ):
+            self.db_manager.refresh_pending_jd_snippet(
+                int(job_id),
+                company_name=employer,
+                job_title=stored_title,
+                jd_snippet=snippet or (title or "")[:500],
+            )
+        log_activity("Rex", f"Stored JD #{job_id} before score: {employer} — {stored_title}")
+        return job_id
 
     def expand_career_horizons(self, abstract_profile: dict) -> CareerHorizonPlan:
         """Ask DeepSeek how core competencies transfer across HK industries.
@@ -721,6 +806,223 @@ Anonymized profile:
             print(f"⚠️ [JSON parse skipped] {exc}")
             return None
 
+    def _load_abstract(
+        self,
+        user_profile: Optional[dict],
+        profile_path: Path,
+    ) -> tuple[dict, dict]:
+        from milo_intake import MiloIntakeAgent
+
+        milo = MiloIntakeAgent(profile_path=profile_path)
+        milo.sync_compress_if_new_chat(source="rex")
+        if milo.profile:
+            if not user_profile:
+                user_profile = milo.profile
+            elif milo.profile.get("acceptance_context"):
+                user_profile.setdefault("acceptance_context", milo.profile["acceptance_context"])
+        if user_profile and "basics" in user_profile:
+            abstract = anonymize_profile_dict(user_profile).model_dump()
+        elif user_profile:
+            abstract = user_profile
+        else:
+            abstract = load_anonymized_profile(profile_path)
+        pac = (user_profile or {}).get("acceptance_context") if user_profile else None
+        if not pac and "acceptance_context" in abstract:
+            pac = abstract.get("acceptance_context")
+        if pac:
+            abstract["pac_deal_breakers"] = pac.get("absolute_deal_breakers") or []
+            if pac.get("executive_narrative"):
+                abstract["milo_narrative"] = pac["executive_narrative"]
+            if pac.get("core_transferable_skills"):
+                abstract.setdefault("abstract_capabilities", []).extend(
+                    pac["core_transferable_skills"]
+                )
+        else:
+            abstract["pac_deal_breakers"] = []
+        return abstract, user_profile or {}
+
+    def ingest_job_url(
+        self,
+        job_url: str,
+        user_profile: Optional[dict] = None,
+        min_score: int = DEFAULT_MIN_SCORE,
+        profile_path: Path = DEFAULT_PROFILE_PATH,
+    ) -> Optional[dict]:
+        """Fetch one user-supplied listing, score it, store if it is a real job.
+
+        Prints a JOBHUNTER_INGEST JSON line for the dashboard. Downstream
+        Dana → Leo → Clara runs only when composite meets Dana's gate (80).
+        # Ref: user-pasted JobsDB/ATS URL — skip Tavily search
+        """
+        def emit(payload: dict) -> dict:
+            print("JOBHUNTER_INGEST " + json.dumps(payload, ensure_ascii=False))
+            return payload
+
+        url = normalize_listing_url((job_url or "").strip())
+        if not url:
+            print("⏭️  [Empty job URL]")
+            return emit({"ok": False, "suitable": False, "reason": "empty url"})
+        problem = listing_url_problem(url)
+        if problem or not is_job_posting_url(url):
+            reason = problem or "not a posting URL"
+            print(f"⏭️  [Not a posting URL] {reason} {url}")
+            log_activity("Rex", f"Rejected pasted URL: {reason}", level="WARN")
+            return emit({"ok": False, "suitable": False, "reason": reason, "url": url})
+
+        existing_state = self.db_manager.listing_eval_state(url)
+        if existing_state is not None:
+            already = _listing_already_scored(
+                existing_state.get("recommendation_reason") or "",
+                existing_state.get("match_score"),
+            )
+            if already:
+                score = int(existing_state.get("match_score") or 0)
+                suitable = passes_dana_composite_gate(score, 80)
+                job_id = int(existing_state["id"])
+                print(f"ℹ️  URL already stored as job #{job_id} (score={score})")
+                log_activity("Rex", f"Pasted URL already in DB as #{job_id}")
+                return emit({
+                    "ok": True,
+                    "job_id": job_id,
+                    "suitable": suitable,
+                    "composite": score,
+                    "company": existing_state.get("company_name") or "",
+                    "title": existing_state.get("job_title") or "",
+                    "reason": "already_stored",
+                })
+
+        try:
+            html = fetch_page_text(url)
+        except Exception as exc:
+            html = ""
+            print(f"⚠️  [Fetch failed] {exc}")
+        content = re.sub(r"<[^>]+>", " ", html or "")
+        content = re.sub(r"\s+", " ", content).strip()
+        if len(content) < 120 and getattr(self, "tavily", None):
+            try:
+                extracted = self.tavily.extract(urls=[url])
+                rows = (extracted or {}).get("results") or []
+                if rows:
+                    extra = rows[0].get("raw_content") or rows[0].get("content") or ""
+                    if extra:
+                        content = extra
+            except Exception as exc:
+                print(f"⚠️  [Tavily extract failed] {exc}")
+        if len(content) < 80:
+            log_activity("Rex", "Pasted URL had too little JD text", level="WARN")
+            return emit({"ok": False, "suitable": False, "reason": "could not read job page", "url": url})
+
+        draft_id = self._store_search_jd(
+            url=url,
+            title=title_from_job_url(url) or display_listing_title("", url),
+            content=content,
+            source_lane="target_employer",
+            company_name="",
+        )
+        if draft_id is None:
+            return emit({"ok": False, "suitable": False, "reason": "could not store job", "url": url})
+
+        abstract, user_profile = self._load_abstract(user_profile, profile_path)
+        listing_title = title_from_job_url(url) or display_listing_title("", url)
+        track = CareerSearchTrack(
+            track_id="user_link",
+            industry="Other",
+            rationale="User-supplied job posting URL",
+            search_query=url,
+            target_domain_hints=[],
+            target_companies=[],
+        )
+        eval_res = self.evaluate_job(
+            content, abstract, search_track=track,
+            listing_title=listing_title, listing_url=url,
+        )
+        if not eval_res or not eval_res.is_valid_job:
+            return emit({"ok": False, "suitable": False, "reason": "not a valid paid job", "url": url})
+        if not eval_res.is_hong_kong_role:
+            return emit({"ok": False, "suitable": False, "reason": "not a Hong Kong role", "url": url})
+        deal_breakers = abstract.get("pac_deal_breakers") or []
+        text_lower = content.lower()
+        for phrase in deal_breakers:
+            if phrase and phrase.strip() and phrase.strip().lower() in text_lower:
+                return emit({
+                    "ok": False,
+                    "suitable": False,
+                    "reason": f"deal-breaker: {phrase.strip()}",
+                    "url": url,
+                })
+        company_name = eval_res.company_name
+        if not is_usable_company_name(company_name):
+            resolved = resolve_employer_name(url, content)
+            if resolved:
+                company_name = resolved
+        if not is_usable_company_name(company_name):
+            company_name = extract_host(url) or "Undisclosed employer"
+        stored_title = prefer_listing_title(listing_title, url, eval_res.job_title)
+        if is_junk_job_title(stored_title):
+            stored_title = eval_res.job_title or listing_title
+        below_gate = not passes_dual_score_gate(
+            eval_res.composite_match_score, eval_res.transferability_score, min_score=min_score,
+        )
+        try:
+            snippet = summarize_jd(self.client, self.chat_model, content)
+        except Exception:
+            snippet = content[:500]
+        job_record = {
+            "job_url": url,
+            "company_name": company_name,
+            "job_title": stored_title,
+            "location_mode": eval_res.location_mode,
+            "salary_range": eval_res.salary_range,
+            "match_score": eval_res.composite_match_score,
+            "matched_skills": eval_res.transferable_strengths,
+            "missing_skills": eval_res.bridging_gaps,
+            "is_direct_hire": eval_res.is_direct_hire,
+            "recommendation_reason": eval_res.recommendation_reason,
+            "jd_snippet": snippet,
+            "target_industry": eval_res.target_industry,
+            "hard_skill_match_score": eval_res.hard_skill_match_score,
+            "transferability_score": eval_res.transferability_score,
+            "transferable_strengths": eval_res.transferable_strengths,
+            "career_advisory_note": eval_res.career_advisory_note,
+        }
+        try:
+            self.db_manager.update_job_evaluation(draft_id, job_record)
+            job_id = draft_id
+        except Exception as exc:
+            print(f"⚠️ [Store skipped] {stored_title}: {exc}")
+            log_activity("Rex", f"Pasted URL store failed: {exc}", level="ERROR")
+            return emit({"ok": False, "suitable": False, "reason": str(exc), "url": url})
+        suitable = (not below_gate) and passes_dana_composite_gate(
+            eval_res.composite_match_score, 80
+        )
+        notify_job_update(
+            "Rex",
+            "Job archived (below gate)" if below_gate else "Pasted job stored",
+            company=company_name,
+            title=stored_title,
+            score=eval_res.composite_match_score,
+            url=url,
+            extra=f"suitable={suitable}",
+        )
+        log_activity(
+            "Rex",
+            f"Ingested pasted job #{job_id}: {company_name} — {stored_title} "
+            f"composite={eval_res.composite_match_score} suitable={suitable}",
+        )
+        print(
+            f"🎯 [Pasted listing] {company_name} - {stored_title} "
+            f"| composite={eval_res.composite_match_score} suitable={suitable}"
+        )
+        return emit({
+            "ok": True,
+            "job_id": job_id,
+            "suitable": suitable,
+            "composite": eval_res.composite_match_score,
+            "company": company_name,
+            "title": stored_title,
+            "reason": "stored",
+        })
+
     def run_pipeline(
         self,
         search_keywords: str = "",
@@ -827,7 +1129,7 @@ Anonymized profile:
                 continue
             for raw in raw_jobs:
                 url = raw.get("url")
-                if not url or url in seen_urls or self.db_manager.job_exists(url):
+                if not url or url in seen_urls:
                     continue
                 if is_academic_non_job_url(url) or is_academic_programme_title(raw.get("title") or ""):
                     print(f"⏭️  [Not a paid job listing] {raw.get('title')} {url}")
@@ -836,12 +1138,52 @@ Anonymized profile:
                 if url_issue or not is_job_posting_url(url):
                     print(f"⏭️  [Not a posting URL] {url_issue or url}")
                     continue
-                if is_junk_job_title(raw.get("title") or ""):
-                    print(f"⏭️  [Catalogue title] {raw.get('title')} {url}")
-                    continue
                 seen_urls.add(url)
-
                 content = raw.get("raw_content") or raw.get("content") or ""
+                state = self.db_manager.listing_eval_state(url)
+                if state is None:
+                    job_id = self._store_search_jd(
+                        url=url,
+                        title=raw.get("title") or "",
+                        content=content,
+                        source_lane=raw.get("source_lane") or "unknown",
+                        company_name="",
+                    )
+                    if job_id is None:
+                        continue
+                    state = {
+                        "id": job_id,
+                        "match_score": 0,
+                        "recommendation_reason": PENDING_EVAL_REASON,
+                        "company_name": "",
+                        "job_title": raw.get("title") or "",
+                    }
+                    discovered_count += 1
+                already = _listing_already_scored(
+                    state.get("recommendation_reason") or "",
+                    state.get("match_score"),
+                )
+                decision = should_evaluate_jd(
+                    title=raw.get("title") or state.get("job_title") or "",
+                    content=content,
+                    url=url,
+                    already_scored=already,
+                )
+                if not decision.proceed:
+                    print(
+                        f"⏭️  [System One skip evaluate] {decision.reason} {url}"
+                    )
+                    log_activity(
+                        "Rex",
+                        f"System One skip evaluate ({decision.confidence:.2f}): {decision.reason}",
+                    )
+                    if not already:
+                        self.db_manager.mark_listing_eval_skipped(
+                            int(state["id"]),
+                            f"system_one_skip: {decision.reason}",
+                        )
+                    continue
+
                 try:
                     eval_res = self.evaluate_job(
                         content,
@@ -855,14 +1197,20 @@ Anonymized profile:
                     log_activity("Rex", f"Evaluate skipped for {url}: {exc}", level="WARN")
                     continue
                 if not eval_res or not eval_res.is_valid_job:
+                    self.db_manager.mark_listing_eval_skipped(
+                        int(state["id"]),
+                        "system_one_skip: not a valid paid job",
+                    )
                     continue
                 if is_academic_programme_title(eval_res.job_title):
                     print(f"⏭️  [LLM labelled an academic programme] {eval_res.job_title}")
                     continue
                 if not eval_res.is_hong_kong_role:
+                    self.db_manager.mark_listing_eval_skipped(
+                        int(state["id"]),
+                        "system_one_skip: not a Hong Kong role",
+                    )
                     continue
-                # --- Milo absolute deal-breakers check (minimal hard filter) ---
-                # Ref: Only absolute_deal_breakers act as hard filter. NOT a blacklist.
                 deal_breakers = abstract.get("pac_deal_breakers", [])
                 if deal_breakers:
                     from talent_scout_agent import passes_absolute_deal_breakers
@@ -885,8 +1233,8 @@ Anonymized profile:
                         print(f"🏷️  [Employer recovered] {eval_res.job_title} → {resolved}")
                         company_name = resolved
                 if not is_usable_company_name(company_name):
-                    print(f"⏭️  [Skip anonymous employer] {eval_res.job_title}")
-                    continue
+                    company_name = state.get("company_name") or extract_host(url) or "Undisclosed employer"
+                    print(f"🏷️  [Keep stored employer] {eval_res.job_title} → {company_name}")
 
                 below_gate = not passes_dual_score_gate(
                     eval_res.composite_match_score,
@@ -909,25 +1257,13 @@ Anonymized profile:
                     raw.get("title") or "", url, eval_res.job_title
                 )
                 if is_junk_job_title(stored_title):
-                    print(f"⏭️  [Catalogue title after normalize] {stored_title}")
-                    continue
-                if not listing_text_supports_title(content, stored_title):
-                    print(
-                        f"⏭️  [Source snippet does not match title] {stored_title} {url}"
-                    )
-                    log_activity(
-                        "Rex",
-                        f"Skipped URL/title mismatch: {stored_title}",
-                        level="WARN",
-                    )
-                    continue
+                    stored_title = eval_res.job_title or stored_title
                 job_summary_text = (
                     f"{company_name} {stored_title} "
                     f"{' '.join(eval_res.tech_stack_required)} "
                     f"{eval_res.target_industry}"
                 )
                 try:
-                    embedding = self.get_embedding(job_summary_text)
                     try:
                         snippet = summarize_jd(self.client, self.chat_model, content)
                     except Exception as exc:
@@ -937,8 +1273,6 @@ Anonymized profile:
                         "job_url": url,
                         "company_name": company_name,
                         "job_title": stored_title,
-                        "source_domain": extract_host(url),
-                        "source_lane": raw.get("source_lane", "unknown"),
                         "location_mode": eval_res.location_mode,
                         "salary_range": eval_res.salary_range,
                         "match_score": eval_res.composite_match_score,
@@ -947,19 +1281,18 @@ Anonymized profile:
                         "is_direct_hire": eval_res.is_direct_hire,
                         "recommendation_reason": eval_res.recommendation_reason,
                         "jd_snippet": snippet,
-                        "created_at": now_hk_iso(),
                         "target_industry": eval_res.target_industry,
                         "hard_skill_match_score": eval_res.hard_skill_match_score,
                         "transferability_score": eval_res.transferability_score,
                         "transferable_strengths": eval_res.transferable_strengths,
                         "career_advisory_note": eval_res.career_advisory_note,
                     }
-                    job_id = self.db_manager.save_job(job_record, embedding)
+                    self.db_manager.update_job_evaluation(int(state["id"]), job_record)
+                    job_id = int(state["id"])
                 except Exception as exc:
-                    print(f"⚠️ [Store skipped] {stored_title}: {exc}")
-                    log_activity("Rex", f"Store skipped: {exc}", level="ERROR")
+                    print(f"⚠️ [Score update skipped] {stored_title}: {exc}")
+                    log_activity("Rex", f"Score update skipped: {exc}", level="ERROR")
                     continue
-                discovered_count += 1
                 notify_job_update(
                     "Rex",
                     "Job archived (below gate)" if below_gate else "New job stored",
@@ -984,7 +1317,7 @@ Anonymized profile:
                     f"| hard={eval_res.hard_skill_match_score} "
                     f"transfer={eval_res.transferability_score} "
                     f"composite={eval_res.composite_match_score} "
-                    f"| {job_record['source_lane']}"
+                    f"| {raw.get('source_lane', 'unknown')}"
                 )
                 if eval_res.career_advisory_note:
                     print(f"   💡 {eval_res.career_advisory_note}")
@@ -1005,6 +1338,11 @@ Anonymized profile:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hong Kong Technical Career Path Architect")
     parser.add_argument("--query", default="", help="Optional extra search keywords (merged as one track)")
+    parser.add_argument(
+        "--job-url",
+        default="",
+        help="Analyze one posting URL instead of searching (still rejects search/index pages)",
+    )
     parser.add_argument("--min-score", type=int, default=DEFAULT_MIN_SCORE)
     parser.add_argument(
         "--profile",
@@ -1017,22 +1355,31 @@ if __name__ == "__main__":
     from env_keys import deepseek_api_key, tavily_api_key
     tavily_key = tavily_api_key()
     deepseek_key = deepseek_api_key()
-    if not tavily_key or not deepseek_key:
+    if not deepseek_key:
+        raise SystemExit("Set DEEPSEEK_API_KEY in the environment or a .env file.")
+    if not args.job_url and not tavily_key:
         raise SystemExit(
             "Set TAVILY_API_KEY and DEEPSEEK_API_KEY in the environment or a .env file."
         )
 
     agent = TalentScoutAgent(
-        tavily_api_key=tavily_key,
+        tavily_api_key=tavily_key or "unused",
         deepseek_api_key=deepseek_key,
     )
     print(f"Using DeepSeek {agent.chat_model} @ {DEEPSEEK_BASE_URL}")
     try:
-        agent.run_pipeline(
-            search_keywords=args.query,
-            min_score=args.min_score,
-            profile_path=Path(args.profile),
-        )
+        if args.job_url:
+            agent.ingest_job_url(
+                job_url=args.job_url,
+                min_score=args.min_score,
+                profile_path=Path(args.profile),
+            )
+        else:
+            agent.run_pipeline(
+                search_keywords=args.query,
+                min_score=args.min_score,
+                profile_path=Path(args.profile),
+            )
     except Exception as exc:
         log_activity("Rex", f"Pipeline crashed: {exc}", level="ERROR")
         print(f"❌ Rex pipeline crashed: {exc}")

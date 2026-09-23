@@ -48,6 +48,11 @@ export const api = {
   // Milo — CV intake, chat, history
   importCv: (candidateId, cvText) =>
     postJSON('/candidates/import-cv', { candidate_id: candidateId || 'default', cv_text: cvText }),
+  importLinkedin: (candidateId, username) =>
+    postJSON('/candidates/import-linkedin', {
+      candidate_id: candidateId || 'default',
+      username,
+    }),
   importCvFile: (candidateId, file) => {
     const fd = new FormData()
     fd.append('candidate_id', candidateId || 'default')
@@ -77,11 +82,16 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(profile),
     }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
-  createCandidate: (id, name, location) =>
+  createCandidate: (id, name, location, linkedin) =>
     fetch(`${BASE}/candidates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, name, location }),
+      body: JSON.stringify({
+        id,
+        name,
+        location,
+        ...(linkedin ? { linkedin } : {}),
+      }),
     }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
 
   jobs: (params) => getJSON('/jobs', params),
@@ -109,6 +119,14 @@ export const api = {
     if (opts?.v != null) params.set('v', String(opts.v))
     const qs = params.toString()
     return `${BASE}/jobs/${id}/cv${qs ? `?${qs}` : ''}`
+  },
+  jobCoverLetterUrl: (id, opts) => {
+    const params = new URLSearchParams()
+    if (opts?.candidateId) params.set('candidate_id', opts.candidateId)
+    if (opts?.download) params.set('download', '1')
+    if (opts?.v != null) params.set('v', String(opts.v))
+    const qs = params.toString()
+    return `${BASE}/jobs/${id}/cover-letter${qs ? `?${qs}` : ''}`
   },
   jobChecklistUrl: (id) => `${BASE}/jobs/${id}/checklist`,
   jobResearchUrl: (id) => `${BASE}/jobs/${id}/research`,

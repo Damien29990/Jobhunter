@@ -16,7 +16,11 @@ from listing_filters import (
     is_academic_non_job_url,
     is_academic_programme_title,
     is_job_posting_url,
+    is_jobsdb_category_url,
+    is_hkstp_listing_url,
     is_junk_job_title,
+    jobsdb_postings_from_listing_text,
+    hkstp_postings_from_listing_text,
     listing_check_verdict,
     listing_text_supports_title,
     listing_url_problem,
@@ -70,6 +74,21 @@ def test_reject_search_and_index_urls() -> None:
         "https://hk.jobsdb.com/job/80001234/building-services-engineer"
     ) is True
     assert is_job_posting_url(
+        "https://hk.jobsdb.com/en/job/80001234/software-engineer"
+    ) is True
+    assert is_job_posting_url("https://hk.jobsdb.com/jobs-in-hong-kong") is False
+    assert is_jobsdb_category_url("https://hk.jobsdb.com/python-engineer-jobs") is True
+    cards = jobsdb_postings_from_listing_text(
+        "### [Software Engineer](/job/94769754?type=standard)\n"
+        "### [Data Engineer](https://hk.jobsdb.com/job/94467886)\n"
+        "noise /python-jobs"
+    )
+    assert [item["url"] for item in cards] == [
+        "https://hk.jobsdb.com/job/94769754",
+        "https://hk.jobsdb.com/job/94467886",
+    ]
+    assert cards[0]["title"] == "Software Engineer"
+    assert is_job_posting_url(
         "https://hk.linkedin.com/jobs/view/ai-full-stack-engineer-at-midas-analytics-4465495711"
     ) is True
     assert is_job_posting_url("https://job-boards.greenhouse.io/hyphenconnect") is False
@@ -122,3 +141,31 @@ def test_phenom_hkjc_hkt_are_job_postings() -> None:
     assert "Application Development" in slug_title or "Assistant Manager" in slug_title
     assert display_listing_title("Job Details | The Hong Kong Jockey Club", hkjc) == slug_title
     assert clean_listing_title("Software Engineer | HKT") == "Software Engineer"
+
+
+def test_user_paste_allows_non_tavily_posting_but_rejects_search() -> None:
+    """Pasted Rex URLs skip the Tavily domain whitelist; search pages still fail.
+
+    # Ref: listing_url_problem / is_job_posting_url
+    """
+    posting = "https://careers.example-bank.com/jobs/12345/python-backend-engineer"
+    search = "https://hk.jobsdb.com/python-jobs"
+    assert listing_url_problem(posting) is None
+    assert is_job_posting_url(posting) is True
+    assert is_job_posting_url(search) is False
+    assert listing_url_problem(search)
+
+
+def test_hkstp_talent_pool_posting_vs_home() -> None:
+    home = "https://talentjobseeker.hkstp.org/"
+    posting = "https://talentjobseeker.hkstp.org/job/103419/AI-Engineer-Cloud-Infrastructure-"
+    assert is_hkstp_listing_url(home) is True
+    assert is_job_posting_url(home) is False
+    assert is_job_posting_url(posting) is True
+    cards = hkstp_postings_from_listing_text(
+        "[AI Engineer](https://talentjobseeker.hkstp.org/job/103419/AI-Engineer-Cloud-Infrastructure-)\n"
+        "/job/101786/Senior-Power-Electronics-R-D-Engineer"
+    )
+    urls = {c["url"] for c in cards}
+    assert posting in urls
+    assert "https://talentjobseeker.hkstp.org/job/101786/Senior-Power-Electronics-R-D-Engineer" in urls

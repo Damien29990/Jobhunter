@@ -104,12 +104,14 @@ def import_cv(cv_text: str) -> Optional[dict]:
     """Parse CV text into a structured profile dict via Ollama."""
     prompt = (
         "You are a CV parser. Extract the candidate's profile from this CV text.\n"
-        'Return ONLY JSON: {"basics":{"name":"","location":"","target_roles":[],"languages":[]},'
+        'Return ONLY JSON: {"basics":{"name":"","location":"","email":"","phone":"","address":"","website":"","github":"","linkedin":"","target_roles":[],"languages":[]},'
         '"education":[{"institution":"","degree":"","year":""}],'
         '"technical_skills":{},'
-        '"experience":[{"company":"","role":"","period":"","highlights":[],"skills_used":[]}],'
-        '"projects":[{"name":"","description":"","tech_stack":[]}],'
-        '"certifications":[{"name":"","issuer":"","year":null}]}\n'
+        '"experience":[{"company":"","roles":[{"role":"","period":"","highlights":[],"skills_used":[]}]}],'
+        '"projects":[{"name":"","role":"","is_side_project":false,"period":"","employer":"","description":"","tech_stack":[]}],'
+        '"certifications":[{"name":"","issuer":"","year":null}],'
+        '"languages":[{"name":"","proficiency":""}],'
+        '"awards":[{"name":"","issuer":"","year":null,"description":""}]}\n'
         "Rules:\n"
         "1. Extract ONLY facts present. Do NOT invent.\n"
         "2. Keep highlights under 200 chars.\n"
@@ -117,7 +119,11 @@ def import_cv(cv_text: str) -> Optional[dict]:
         "(e.g. Nov 2024 – Mar 2026 or Mar 2026 – Present). Never swap start/end.\n"
         "4. List experience in reverse chronological order (current/most recent job first).\n"
         "5. company is the employer name, never the candidate's own name unless it is freelance.\n"
-        "6. Preserve table rows: dates in one cell belong to the employer in the same row.\n\n"
+        "6. Preserve table rows: dates in one cell belong to the employer in the same row.\n"
+        "7. If the candidate was promoted at the same company, use one experience object with "
+        "multiple roles (each with its own period, highlights, skills_used).\n"
+        "8. Copy email, phone, address, website, GitHub, and LinkedIn when they appear. "
+        "GitHub/LinkedIn may be a username or a full URL.\n\n"
         f"CV TEXT:\n{cv_text[:12000]}"
     )
     result = _ollama_json(prompt, timeout=45.0)
@@ -358,7 +364,7 @@ class MiloIntakeAgent:
         parsed = import_cv(cv_text)
         if not parsed:
             return self.profile
-        for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications"):
+        for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications", "languages", "awards"):
             if parsed.get(key):
                 if key == "basics":
                     self.profile.setdefault("basics", {}).update(parsed["basics"])
@@ -538,7 +544,7 @@ class MiloIntakeAgent:
         if cv_path:
             parsed = import_cv_file(cv_path)
             if parsed:
-                for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications"):
+                for key in ("basics", "education", "technical_skills", "experience", "projects", "certifications", "languages", "awards"):
                     if parsed.get(key):
                         if key == "basics":
                             self.profile.setdefault("basics", {}).update(parsed["basics"])

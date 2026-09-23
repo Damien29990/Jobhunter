@@ -46,7 +46,7 @@
       "milo": "Calibrate career lens with Milo",
       "rex": "Scan cross-domain roles with Rex",
       "dana": "Vet top prospects with Dana",
-      "leo": "Generate tailored Typst CVs with Leo",
+      "leo": "Generate CV + cover letter with Leo",
       "clara": "Audit submission portals with Clara"
     }
   },
@@ -129,7 +129,7 @@
     "unconsiderableHint": "Hide from your board. Agents can still retrieve this job.",
     "empty": {
       "all": "— select a job —",
-      "dana": "No pending vetting — run Rex first",
+      "dana": "No discovered or vetted jobs",
       "leo": "No PROCEED-vetted jobs — run Dana first",
       "clara": "No CV-ready jobs — run Leo first"
     },
@@ -144,22 +144,34 @@
   },
   "detail": {
     "title": "Job Detail",
+    "prevJob": "Previous job",
+    "nextJob": "Next job",
+    "prevInStage": "Previous job in this stage",
+    "nextInStage": "Next job in this stage",
     "tabs": {
       "overview": "Overview",
       "dossier": "Dossier",
       "pack": "Application Pack",
-      "cv": "CV Previewer"
+      "cv": "Application docs"
     },
     "created": "created",
     "jobNotFound": "job not found",
     "loading": "loading…",
     "noDossier": "No dossier yet — run Dana to investigate this employer.",
     "noChecklist": "No application checklist — run Clara after Leo produces a CV.",
-    "noCv": "No CV yet — run Leo after Dana marks the employer PROCEED.",
+    "noCv": "No CV or cover letter yet — run Leo after Dana marks the employer PROCEED.",
     "cvReady": "CV.pdf ready",
     "cvTypOnly": "CV.typ only",
+    "coverLetterReady": "Cover letter.pdf ready",
+    "coverLetterTypOnly": "Cover letter.typ only",
+    "docCv": "CV",
+    "docCoverLetter": "Cover letter",
     "openCvNewTab": "Open in new tab",
     "downloadCv": "Download CV",
+    "downloadCoverLetter": "Download cover letter",
+    "downloadFile": "Download",
+    "docsList": "Documents",
+    "rerunThisFile": "Re-run this file",
     "appReady": "Application Ready",
     "sections": {
       "techStack": "TECH STACK",
@@ -176,6 +188,10 @@
     "transfer": "Transfer",
     "composite": "Composite",
     "weighting": "weighted 55% hard / 45% transfer",
+    "runDana": "Run Dana (background check)",
+    "runDanaHint": "Bypass score gate and research this employer now",
+    "danaStarted": "Dana started (PID: {{pid}})",
+    "danaFailed": "Failed to start: {{error}}",
     "stage": {
       "title": "Rework this job",
       "run": "Run",
@@ -186,9 +202,9 @@
       "stopNamed": "Stop {{name}}",
       "failed": "failed to start",
       "danaTitle": "Dana — employer dossier",
-      "leoTitle": "Leo — CV previewer",
+      "leoTitle": "Leo — application documents",
       "claraTitle": "Clara — application pack",
-      "hintDana": "Dana usually needs composite ≥ {{n}}. The agent may skip this job.",
+      "hintDana": "Composite is below Dana's usual gate (≥ {{n}}). This button still researches the employer.",
       "hintLeo": "Leo usually needs a {{verdict}} verdict. The agent may skip this job.",
       "hintClara": "Clara usually needs a generated CV. The agent may skip this job."
     }
@@ -202,13 +218,16 @@
     "started": "✓ started (pid {{pid}})",
     "failed": "failed to start",
     "fields": {
+      "jobUrl": "Job posting URL",
       "query": "Extra keywords",
       "minScore": "Min composite score",
       "company": "Company (substring)",
       "jobId": "Job id",
       "forceRefresh": "Force refresh",
+      "forceDana": "Skip score gate (manual override for low-score jobs)",
       "minMatchScore": "Min match score",
-      "cvFile": "Upload CV (text or .txt/.json/.md)",
+      "cvFile": "Upload CV (PDF, TXT, MD, JSON, DOCX)",
+      "linkedinUsername": "LinkedIn username (optional)",
       "cvPath": "CV file path (optional)",
       "canvasTemplate": "Canvas template (optional)"
     },
@@ -216,7 +235,7 @@
       "milo": "Run Milo to Calibrate Career Lens",
       "rex": "Assign Search Track to Rex",
       "dana": "Tell Dana to Vet Pending Companies",
-      "leo": "Generate Tailored Typst CVs with Leo",
+      "leo": "Generate CV + cover letter with Leo",
       "clara": "Audit Submission Portals with Clara"
     }
   },
@@ -226,7 +245,8 @@
       "bio": "Exploratory Summarizer. Imports your CV, chats about your career situation, extracts transferable skills and exploration spectrum to provide a lens for downstream agents.",
       "purpose": "Does NOT hard-filter. Expands Rex's search horizon by extracting your core capabilities and exploration directions into a candidate narrative.",
       "howTo": [
-        "Optionally upload a CV (text or PDF path).",
+        "Optionally enter a LinkedIn username to seed a basic profile.",
+        "Optionally upload a CV (text or PDF). CV facts overwrite empty LinkedIn gaps.",
         "Chat with Milo to add career context (e.g. secondment, body rental).",
         "Click Run Milo — he extracts PAC (exploration spectrum) and writes to your profile."
       ]
@@ -237,9 +257,10 @@
       "purpose": "Discovers cross-domain roles you would not search yourself, and scores them with a dual hard-skill / transferability matrix.",
       "howTo": [
         "Pick a candidate profile (top-right).",
-        "Optionally add extra search keywords in the quick action.",
+        "Paste a single job posting URL to analyse that listing (search/index pages are rejected).",
+        "Or add extra search keywords for a Tavily crawl.",
         "Set a minimum composite score (default 75, or transferability ≥ 85).",
-        "Click \"Run Rex\" — he will de-identify your profile, plan search tracks, and crawl trusted sources."
+        "Click \"Run Rex\" — a suitable pasted job (composite ≥ 80) continues to Dana → Leo → Clara."
       ]
     },
     "dana": {
@@ -255,14 +276,14 @@
     },
     "leo": {
       "role": "Agent 3 — CV Generator",
-      "bio": "Resume tailor. Rewrites your master profile to align with each JD (ground-truth only, STAR method), renders Typst via Jinja2, and compiles a PDF.",
-      "purpose": "Produces an ATS-aligned CV per job — but only for PROCEED-vetted, high-match roles.",
+      "bio": "Resume tailor. Rewrites your master profile to align with each JD (ground-truth only, STAR method), then produces a CV and cover letter in Typst/PDF.",
+      "purpose": "Produces ATS-aligned application documents per job — but only for PROCEED-vetted, high-match roles.",
       "howTo": [
         "Dana must have marked the employer PROCEED.",
         "The job needs match_score ≥ 80.",
         "Optionally target one company or job id.",
         "Optionally pick a Canvas template (classic, compact, technical) or leave blank to auto-pick.",
-        "Click \"Run Leo\" — he writes CV.typ + CV.pdf to output/{company}_{role}/."
+        "Click \"Run Leo\" — he writes CV + cover letter (.typ/.pdf/.md) to output/{company}_{role}/."
       ]
     },
     "clara": {
@@ -324,9 +345,19 @@
     "newPerson": "New Person",
     "create": "Create",
     "save": "Save",
+    "unsavedTitle": "Unsaved changes",
+    "unsavedBody": "This profile has edits that are not saved yet. Save before closing?",
+    "unsavedSave": "Save",
+    "unsavedDiscard": "Don't save",
+    "unsavedStay": "Keep editing",
     "loading": "Loading profile…",
-    "needIdName": "Please enter an id and a name.",
+    "needIdName": "Please enter an id and a name (or a LinkedIn username to set up).",
     "idHint": "id is the filename stem (e.g. damien → config/profiles/damien.json). Letters, digits, - or _ only.",
+    "linkedinSetupUse": "Use this LinkedIn username to set up the profile",
+    "linkedinSetupHint": "Does not run by itself. Tick the box, then press Update from LinkedIn.",
+    "linkedinSetupRequired": "Tick “Use this LinkedIn username to set up the profile” first.",
+    "setupCv": "CV file (optional setup)",
+    "uploadCv": "Upload CV",
     "selectJob": "— select a job —",
     "newCategory": "new category",
     "tabs": {
@@ -335,44 +366,96 @@
       "skills": "Skills",
       "experience": "Experience",
       "projects": "Projects",
-      "certs": "Certifications"
+      "certs": "Certifications",
+      "languages": "Languages",
+      "awards": "Awards"
     },
     "fields": {
       "id": "Profile id",
       "name": "Name",
       "location": "Location",
+      "email": "Email",
+      "phone": "Phone",
+      "address": "Address (optional)",
+      "website": "Personal website (optional)",
+      "github": "GitHub (username or URL)",
+      "linkedin": "LinkedIn (username or URL)",
+      "optional": "optional",
       "minSalary": "Min expected salary (HKD)",
       "targetRoles": "Target roles",
       "languages": "Languages",
+      "language": "Language",
+      "proficiency": "Proficiency",
+      "proficiencyCustom": "Custom proficiency",
+      "proficiencyCustomHint": "e.g. JLPT N3, CEFR B2",
       "institution": "Institution",
       "degree": "Degree",
       "year": "Year",
       "company": "Company",
       "role": "Role",
+      "roleCustom": "Custom role",
+      "roleCustomHint": "e.g. IoT firmware lead",
+      "isSideProject": "Side project",
+      "employer": "Employer (if work project)",
+      "employerUnset": "Select from experience",
+      "employerNeedExperience": "Add a company under Experience first.",
       "period": "Period",
       "highlights": "Highlights (one per line)",
       "skillsUsed": "Skills used",
+      "promotionHint": "Same company, new title: add another role with its own period, description, and skills.",
       "description": "Description",
       "techStack": "Tech stack",
       "issuer": "Issuer",
       "category": "Category"
     },
     "addEducation": "Add education",
-    "addExperience": "Add experience",
+    "addExperience": "Add employer",
+    "addRole": "Add title (promotion)",
     "addProject": "Add project",
-    "addCert": "Add certification"
+    "addCert": "Add certification",
+    "addLanguage": "Add language",
+    "addAward": "Add award",
+    "proficiency": {
+      "unset": "Select level",
+      "native": "Native",
+      "fluent": "Fluent",
+      "professional": "Professional working",
+      "intermediate": "Intermediate",
+      "basic": "Basic",
+      "other": "Other…"
+    },
+    "projectRole": {
+      "unset": "Select role",
+      "owner": "Owner / founder",
+      "techLead": "Tech lead",
+      "fullStack": "Full-stack engineer",
+      "backend": "Backend engineer",
+      "frontend": "Frontend engineer",
+      "dataMl": "Data / ML engineer",
+      "designer": "Designer",
+      "product": "Product manager",
+      "contributor": "Contributor",
+      "maintainer": "Maintainer",
+      "researcher": "Researcher",
+      "other": "Other…"
+    }
   },
   "milo": {
     "title": "Milo",
     "talk": "Talk to Milo",
     "you": "You",
     "placeholder": "Ask Milo about your career…",
-    "empty": "No conversation yet — attach a CV or say hi.",
+    "empty": "No conversation yet — LinkedIn username, attach a CV, or say hi.",
     "loadingHistory": "Loading history…",
     "historyError": "History unavailable until the DB migration is run.",
     "parsing": "Parsing CV with Ollama…",
     "imported": "✓ CV imported — profile updated",
-    "pdfNote": "PDF, TXT, MD, JSON, or DOCX.",
+    "pdfNote": "PDF, TXT, MD, JSON, or DOCX. You can still upload a CV after LinkedIn.",
+    "linkedinImport": "Update from LinkedIn",
+    "linkedinParsing": "Looking up…",
+    "linkedinImported": "✓ LinkedIn used to seed the profile. Upload a CV anytime to add detail.",
+    "linkedinSkeleton": "✓ Username saved. LinkedIn page was not public — upload a CV with Milo to fill experience.",
+    "linkedinHint": "Public username or linkedin.com/in/… URL. Does not log in. CV import still works afterwards.",
     "attach": "Attach file",
     "attachHint": "PDF / TXT / MD / JSON / DOCX · max 5MB · up to 3 files",
     "removeFile": "Remove",

@@ -6,6 +6,7 @@ import { X, Play, LoaderCircle, AlertCircle, Square, Sparkles } from 'lucide-rea
 import PixelAgent from './PixelOffice/PixelAgent'
 import { AGENT_BY_KEY } from '../lib/agents'
 import { api } from '../lib/api'
+import { isValidLinkedinUsername, linkedinProfileUrl } from '../lib/contactLinks'
 
 function Field({ field, value, onChange, t, agentKey, candidateId }) {
   if (field.type === 'checkbox') {
@@ -26,6 +27,9 @@ function Field({ field, value, onChange, t, agentKey, candidateId }) {
   }
   if (field.type === 'cvfile') {
     return <CvFileField field={field} value={value} onChange={onChange} t={t} candidateId={candidateId} />
+  }
+  if (field.type === 'linkedin') {
+    return <LinkedinField field={field} value={value} onChange={onChange} t={t} candidateId={candidateId} />
   }
   return (
     <label className="block">
@@ -49,8 +53,9 @@ function CvFileField({ field, value, onChange, t, candidateId }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [err, setErr] = useState(null)
+  const [file, setFile] = useState(null)
 
-  async function handleFile(file) {
+  async function importFile() {
     if (!file) return
     setBusy(true); setResult(null); setErr(null)
     try {
@@ -69,19 +74,84 @@ function CvFileField({ field, value, onChange, t, candidateId }) {
   }
 
   return (
-    <label className="block">
+    <div className="block">
       <span className="font-mono text-[12px] text-slate-500">{t(field.labelKey)}</span>
       <input
         type="file"
         accept=".txt,.json,.md,.text,.pdf,.docx,.doc"
         disabled={busy}
-        onChange={(e) => handleFile(e.target.files?.[0])}
+        onChange={(e) => { setFile(e.target.files?.[0] || null); setResult(null); setErr(null) }}
         className="w-full panel-inset px-2 py-1.5 font-mono text-[12px] text-slate-200 file:mr-2"
       />
-      {busy && <div className="mt-1 font-mono text-[12px] text-violet-400 flex items-center gap-1" style={{ color: '#a78bfa' }}><LoaderCircle size={13} className="animate-spin" /> {t('milo.parsing')}</div>}
+      {file && <div className="mt-1 font-mono text-[11px] text-slate-400">{file.name}</div>}
+      <button
+        type="button"
+        disabled={busy || !file}
+        onClick={importFile}
+        className="mt-2 w-full panel px-2 py-1.5 font-pixel text-[10px] text-violet-300 disabled:opacity-40"
+      >
+        {busy ? t('milo.parsing') : t('profile.uploadCv')}
+      </button>
       {result && <div className="mt-1 font-mono text-[12px] text-emerald-retro">{t('milo.imported')}</div>}
       {err && <div className="mt-1 font-mono text-[12px] text-rose-retro">⚠️ {err}</div>}
       <div className="mt-1 font-mono text-[10px] text-slate-600">{t('milo.pdfNote')}</div>
+    </div>
+  )
+}
+
+function LinkedinField({ field, value, onChange, t, candidateId }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  const [err, setErr] = useState(null)
+  const valid = isValidLinkedinUsername(value)
+
+  async function importHandle() {
+    if (!valid) return
+    setBusy(true); setResult(null); setErr(null)
+    try {
+      const res = await api.importLinkedin(candidateId, value)
+      setResult(res)
+      onChange?.(res?.basics?.linkedin || value)
+    } catch (e) {
+      setErr(String(e.detail || e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const href = linkedinProfileUrl(value)
+  return (
+    <label className="block">
+      <span className="font-mono text-[12px] text-slate-500">{t(field.labelKey)}</span>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder="your-linkedin-slug"
+          value={value ?? ''}
+          onChange={(e) => { onChange(e.target.value); setResult(null); setErr(null) }}
+          className="flex-1 panel-inset px-2 py-1.5 font-mono text-[12px] text-slate-200 focus:outline-none focus:border-amber-retro"
+        />
+        <button
+          type="button"
+          disabled={busy || !valid}
+          onClick={importHandle}
+          className="panel px-2 py-1 font-pixel text-[10px] text-violet-300 disabled:opacity-40"
+        >
+          {busy ? t('milo.linkedinParsing') : t('milo.linkedinImport')}
+        </button>
+      </div>
+      {href && valid && (
+        <a href={href} target="_blank" rel="noreferrer" className="mt-1 block font-mono text-[10px] text-cyan-400 truncate">
+          {href}
+        </a>
+      )}
+      {result && (
+        <div className="mt-1 font-mono text-[12px] text-emerald-retro">
+          {result.linkedin_source === 'skeleton' ? t('milo.linkedinSkeleton') : t('milo.linkedinImported')}
+        </div>
+      )}
+      {err && <div className="mt-1 font-mono text-[12px] text-rose-retro">⚠️ {err}</div>}
+      <div className="mt-1 font-mono text-[10px] text-slate-600">{t('milo.linkedinHint')}</div>
     </label>
   )
 }
@@ -95,17 +165,19 @@ function JobSelectField({ field, value, onChange, t, agentKey }) {
     api.jobsSummary(agentKey).then(setJobs).catch(() => setJobs([]))
   }, [agentKey])
   const emptyKey = agentKey ? `job.empty.${agentKey}` : 'job.empty.all'
+  const listSize = Math.min(8, Math.max(4, jobs.length + 1))
   return (
     <label className="block">
       <span className="font-mono text-[12px] text-slate-500">{t(field.labelKey)}</span>
       <select
+        size={listSize}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value ? Number(e.target.value) : undefined)}
-        className="w-full panel-inset px-2 py-1.5 font-mono text-[12px] text-slate-200 focus:outline-none focus:border-amber-retro"
+        className="mt-1 w-full panel-inset px-2 py-1.5 font-mono text-[12px] leading-5 text-slate-200 max-h-48 overflow-y-auto kanban-scroll focus:outline-none focus:border-amber-retro"
       >
         <option value="">{t(emptyKey)}</option>
         {jobs.map((j) => (
-          <option key={j.id} value={j.id}>
+          <option key={j.id} value={j.id} title={`#${j.id} · ${j.job_title} — ${j.company_name || t('job.confidential')}`}>
             #{j.id} · {j.job_title} — {j.company_name || t('job.confidential')} ({j.match_score ?? '—'})
           </option>
         ))}

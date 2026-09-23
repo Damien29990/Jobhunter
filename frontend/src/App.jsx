@@ -23,12 +23,16 @@ export default function App() {
   const [agentStatus, setAgentStatus] = useState(null)
   const [agentLog, setAgentLog] = useState(null)
   const [selectedJobId, setSelectedJobId] = useState(null)
+  const [jobsByStage, setJobsByStage] = useState({})
+  const [navStage, setNavStage] = useState(null)
   const [tutorialAgent, setTutorialAgent] = useState(null)
   const [tick, setTick] = useState(0)
   const [backendOnline, setBackendOnline] = useState(null) // null = unknown
   const [dismissedBanner, setDismissedBanner] = useState(false)
   const [editingProfile, setEditingProfile] = useState(null) // null | candidateId | 'new'
   const [talkingMilo, setTalkingMilo] = useState(false)
+
+  const agentsBusy = Object.values(agentStatus || {}).some((a) => a?.state === 'WORKING')
 
   useEffect(() => {
     let active = true
@@ -50,9 +54,9 @@ export default function App() {
       }
     }
     poll()
-    const id = setInterval(poll, 4000)
+    const id = setInterval(poll, agentsBusy ? 1000 : 4000)
     return () => { active = false; clearInterval(id) }
-  }, [tick])
+  }, [tick, agentsBusy])
 
   const handleRunAgent = useCallback((agentKey) => setTutorialAgent(agentKey), [])
   const handleStopAgent = useCallback(async (agentKey) => {
@@ -62,6 +66,12 @@ export default function App() {
   const handleStarted = useCallback(() => {
     setTick((x) => x + 1)
     setTimeout(() => setTick((x) => x + 1), 400)
+  }, [])
+
+  const handleSelectJob = useCallback((job, stage) => {
+    if (!job?.id) return
+    setSelectedJobId(job.id)
+    if (stage) setNavStage(stage)
   }, [])
 
   const showBanner = backendOnline === false && !dismissedBanner
@@ -123,7 +133,12 @@ export default function App() {
       </div>
 
       <div className="px-4 max-w-[1400px] mx-auto pb-4">
-      <PipelineKanban candidateId={candidateId} onSelectJob={(job) => setSelectedJobId(job.id)} tick={tick} />
+      <PipelineKanban
+        candidateId={candidateId}
+        onSelectJob={handleSelectJob}
+        onJobOrderChange={setJobsByStage}
+        tick={tick}
+      />
 
       <AgentLogConsole agentStatus={agentStatus} agentLog={agentLog} />
 
@@ -135,10 +150,12 @@ export default function App() {
       {selectedJobId != null && (
         <DetailDrawer
           jobId={selectedJobId}
+          jobsByStage={jobsByStage}
+          navStage={navStage}
           candidateId={candidateId}
           agentStatus={agentStatus}
-          onClose={() => setSelectedJobId(null)}
-          onSelectJob={(job) => setSelectedJobId(job.id)}
+          onClose={() => { setSelectedJobId(null); setNavStage(null) }}
+          onSelectJob={handleSelectJob}
           onStageStarted={handleStarted}
         />
       )}

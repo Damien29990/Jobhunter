@@ -34,6 +34,10 @@ MIN_MATCH_SCORE: int = 80
 
 # cert_matcher_agent.py:42, cv_generator_agent.py:39
 STATUS_GENERATED: str = "MATERIALS_GENERATED"
+# cv_generator_agent.py:59
+STATUS_RENDERED: str = "MATERIALS_RENDERED"
+
+DANA_JOB_SELECT_STAGES: tuple[str, ...] = ("discovered", "vetted")
 
 # --- Derived gate constants ---
 
@@ -139,6 +143,28 @@ def passes_absolute_deal_breakers(
     return True, ""
 
 
+def kanban_column(
+    match_score: int | None,
+    cv_status: str | None,
+    application_ready: bool | None,
+    vetting_verdict: str | None,
+) -> str:
+    """Kanban column for an active job. Mirrors PipelineKanban.classify.
+
+    # Ref: frontend/src/components/PipelineKanban.jsx classify()
+    """
+    if application_ready:
+        return "applied"
+    status = (cv_status or "").strip()
+    if status in {STATUS_GENERATED, STATUS_RENDERED}:
+        return "materials"
+    if (vetting_verdict or "").strip():
+        return "vetted"
+    if int(match_score or 0) >= AGENT2_POOL_MIN_SCORE:
+        return "vetting"
+    return "discovered"
+
+
 def is_unconsiderable(user_status: str | None) -> bool:
     """True when the user marked the job as not for their own pipeline.
 
@@ -182,11 +208,14 @@ __all__ = [
     "AGENT4_REQUIRED_CV_STATUS",
     "MIN_MATCH_SCORE",
     "STATUS_GENERATED",
+    "STATUS_RENDERED",
+    "DANA_JOB_SELECT_STAGES",
     "DISCOVERED_MIN_SCORE",
     "DISCOVERED_TRANSFER_FLOOR",
     "DASHBOARD_MIN_DISPLAY_SCORE",
     "USER_STATUS_UNCONSIDERABLE",
     "is_unconsiderable",
+    "kanban_column",
     "shelf_bucket",
     "compute_composite_match_score",
     "passes_dual_score_gate",

@@ -27,7 +27,11 @@ from listing_filters import (  # noqa: E402
     is_academic_non_job_url,
     is_academic_programme_title,
     is_job_posting_url,
+    is_jobsdb_category_url,
+    is_hkstp_listing_url,
     is_junk_job_title,
+    jobsdb_postings_from_listing_text,
+    hkstp_postings_from_listing_text,
     listing_text_supports_title,
     listing_url_problem,
     normalize_listing_url,
@@ -49,6 +53,10 @@ HK_TZ = ZoneInfo("Asia/Hong_Kong")
 TAVILY_MAX_INCLUDE_DOMAINS = 300
 DEFAULT_TIME_RANGE = "week"
 MAX_JOB_AGE_DAYS = 14
+MAX_JOBSDB_CATEGORY_EXPAND_PER_SEARCH = 2
+MAX_JOBSDB_POSTINGS_PER_CATEGORY = 6
+MAX_HKSTP_LISTING_EXPAND_PER_SEARCH = 2
+MAX_HKSTP_POSTINGS_PER_LISTING = 6
 
 # DeepSeek Chat Completions is OpenAI-SDK compatible. No embeddings API.
 # Ref: https://api.deepseek.com — use V4 model IDs after deepseek-chat retirement (2026-07-24)
@@ -67,11 +75,16 @@ DEFAULT_PROFILE_PATH = PROJECT_ROOT / "config" / "master_profile.json"
 
 # Public Hong Kong job boards. Verified 2026 market coverage:
 # JobsDB (SEEK) is the volume leader; CTgoodjobs is the main local/Chinese board;
-# Labour Department IES and CSB are official government portals.
+# Labour Department IES and CSB are official government portals;
+# HKSTP Talent Pool lists Science Park tenant vacancies.
 # Ref: HoiSum HK Job Boards Guide 2026; Labour Department IES; Civil Service Bureau
+# Own Tavily lane: mixed-board searches bury JobsDB under LinkedIn/CTgoodjobs,
+# and JobsDB hits are almost always SEO category pages, not /job/{id}.
+JOBSDB_BOARDS: List[str] = [
+    "hk.jobsdb.com",
+    "jobsdb.com",
+]
 HK_JOB_BOARDS: List[str] = [
-    "hk.jobsdb.com/job/",
-    "jobsdb.com/job/",
     "ctgoodjobs.hk",
     "linkedin.com/jobs",
     "efinancialcareers.hk",
@@ -83,6 +96,7 @@ HK_JOB_BOARDS: List[str] = [
     "csb.gov.hk",
     "hkicpa.org.hk",
     "techinasia.com/jobs",
+    "talentjobseeker.hkstp.org",
 ]
 
 # Shared ATS hosts. Large HK employers (banks, Big 4, MNCs, tech) often do not
@@ -161,6 +175,7 @@ HK_EMPLOYER_CAREER_SITES: Dict[str, List[str]] = {
 # Pass extra_domains=... if a specific search needs them.
 
 SEARCH_LANES: Dict[str, List[str]] = {
+    "jobsdb": JOBSDB_BOARDS,
     "hk_job_boards": HK_JOB_BOARDS,
     "ats_platforms": ATS_PLATFORMS,
     "hk_employer_careers": sorted(
@@ -548,6 +563,12 @@ def fetch_page_text(url: str) -> str:
         return response.text
 
 
+def html_to_visible_text(html: str) -> str:
+    """Strip tags for JD scoring. # Ref: pasted JobsDB ingest"""
+    content = re.sub(r"<[^>]+>", " ", html or "")
+    return re.sub(r"\s+", " ", content).strip()
+
+
 def resolve_employer_name(url: str, snippet: str = "") -> Optional[str]:
     """Best-effort legal/trade name from listing text, then the live job URL."""
     from_snippet = extract_hiring_org_from_html(snippet) or extract_hiring_org_from_text(snippet)
@@ -665,6 +686,8 @@ class JobDBManager:
                 ("cv_status", "TEXT"),
                 ("cv_pdf_path", "TEXT"),
                 ("cv_typ_path", "TEXT"),
+                ("cover_letter_pdf_path", "TEXT"),
+                ("cover_letter_typ_path", "TEXT"),
                 # Agent 4 — application readiness audit columns.
                 # Ref: Agent 4 cert_matcher_agent — application_ready flag + checklist path
                 ("application_ready", "BOOLEAN"),
@@ -854,6 +877,156 @@ class JobDBManager:
                 if existing_id is not None:
                     return existing_id
                 raise
+
+    def listing_eval_state(self, url: str) -> Optional[dict]:
+        """Id, score, and eval reason for a stored posting URL.
+
+        # Ref: System One — skip DeepSeek when already scored
+        """
+        for candidate in (url, normalize_listing_url(url or "")):
+            if not candidate:
+                continue
+            cursor = self.db.execute(
+                """
+                SELECT id, match_score, recommendation_reason, company_name, job_title
+                FROM job_postings WHERE job_url = ?
+                """,
+                (candidate,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "id": row[0],
+                    "match_score": row[1],
+                    "recommendation_reason": row[2] or "",
+                    "company_name": row[3] or "",
+                    "job_title": row[4] or "",
+                }
+        return None
+
+    def update_job_evaluation(self, job_id: int, job_data: dict) -> None:
+        """Fill scores after a stored JD is evaluated.
+
+        # Ref: store-first Rex — INSERT snippet, then UPDATE fit scores
+        """
+        strengths = job_data.get("transferable_strengths")
+        if strengths is None:
+            strengths = job_data.get("matched_skills") or []
+        gaps = job_data.get("bridging_gaps")
+        if gaps is None:
+            gaps = job_data.get("missing_skills") or []
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE job_postings SET
+                    company_name = ?,
+                    job_title = ?,
+                    location_mode = ?,
+                    salary_range = ?,
+                    match_score = ?,
+                    matched_skills = ?,
+                    missing_skills = ?,
+                    is_direct_hire = ?,
+                    recommendation_reason = ?,
+                    jd_snippet = COALESCE(?, jd_snippet),
+                    target_industry = ?,
+                    hard_skill_match_score = ?,
+                    transferability_score = ?,
+                    transferable_strengths = ?,
+                    career_advisory_note = ?
+                WHERE id = ?
+                """,
+                (
+                    job_data["company_name"],
+                    display_listing_title(job_data["job_title"] or "", job_data.get("job_url") or "")
+                    or job_data["job_title"],
+                    job_data.get("location_mode"),
+                    job_data.get("salary_range"),
+                    job_data["match_score"],
+                    json.dumps(job_data.get("matched_skills") or strengths),
+                    json.dumps(job_data.get("missing_skills") or gaps),
+                    job_data.get("is_direct_hire"),
+                    job_data.get("recommendation_reason"),
+                    job_data.get("jd_snippet"),
+                    job_data.get("target_industry"),
+                    job_data.get("hard_skill_match_score"),
+                    job_data.get("transferability_score"),
+                    json.dumps(strengths, ensure_ascii=False),
+                    job_data.get("career_advisory_note"),
+                    int(job_id),
+                ),
+            )
+
+    def mark_listing_eval_skipped(self, job_id: int, reason: str) -> None:
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE job_postings
+                SET recommendation_reason = ?
+                WHERE id = ?
+                """,
+                (reason[:500], int(job_id)),
+            )
+
+    def refresh_pending_jd_snippet(
+        self, job_id: int, *, company_name: str, job_title: str, jd_snippet: str
+    ) -> None:
+        """Fill snippet on a store-first row that is not scored yet.
+
+        # Ref: save_job returns existing id without rewriting snippet
+        """
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE job_postings
+                SET company_name = ?,
+                    job_title = ?,
+                    jd_snippet = ?,
+                    recommendation_reason = ?
+                WHERE id = ?
+                """,
+                (
+                    company_name,
+                    job_title,
+                    jd_snippet,
+                    "pending_eval",
+                    int(job_id),
+                ),
+            )
+
+    def get_dossier_meta(self, company_name: str) -> Optional[dict]:
+        """updated_at + confidence for System One Dana re-run.
+
+        # Ref: company_dossiers.updated_at Asia/Hong_Kong
+        """
+        cursor = self.db.execute(
+            """
+            SELECT updated_at, confidence, vetting_verdict, dossier_json
+            FROM company_dossiers
+            WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))
+            """,
+            (company_name,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "updated_at": row[0],
+            "confidence": row[1],
+            "vetting_verdict": row[2],
+            "dossier_json": row[3],
+        }
+
+    def latest_job_created_at(self, company_name: str) -> Optional[str]:
+        cursor = self.db.execute(
+            """
+            SELECT MAX(created_at) FROM job_postings
+            WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))
+            """,
+            (company_name,),
+        )
+        row = cursor.fetchone()
+        return str(row[0]) if row and row[0] else None
 
     def search_similar_jobs(self, query_embedding: List[float], limit: int = 5) -> List[dict]:
         """KNN over sqlite-vec embeddings."""
@@ -1170,7 +1343,11 @@ class TalentScoutAgent:
         include_domains: Sequence[str],
         max_results: int = 8,
     ) -> List[dict]:
-        domains = list(dict.fromkeys(include_domains))[:TAVILY_MAX_INCLUDE_DOMAINS]
+        domains = [
+            pattern.split("/", 1)[0].lower()
+            for pattern in dict.fromkeys(include_domains)
+        ]
+        domains = list(dict.fromkeys(domains))[:TAVILY_MAX_INCLUDE_DOMAINS]
         if not domains:
             return []
         # days= is ignored unless topic=news; use time_range instead.
@@ -1193,6 +1370,162 @@ class TalentScoutAgent:
                 pass
             return []
         return response.get("results", []) or []
+
+    def _jobsdb_postings_from_category(self, category_url: str, seed: dict) -> List[dict]:
+        """Turn a JobsDB SEO index into real /job/{id} pages Rex can score.
+
+        Tavily Search returns category URLs only; Tavily extract of those pages
+        still lists relative /job/ ids. Individual /job/{id} extract usually
+        fails Cloudflare, so we reuse fetch_page_text (same path as paste ingest).
+        # Ref: hk.jobsdb.com Cloudflare on vacancy URLs
+        """
+        blob = str(seed.get("raw_content") or seed.get("content") or "")
+        cards = jobsdb_postings_from_listing_text(blob, MAX_JOBSDB_POSTINGS_PER_CATEGORY)
+        if len(cards) < 2:
+            try:
+                extracted = self.tavily.extract(urls=[category_url])
+            except Exception as exc:
+                print(f"⚠️ [JobsDB category extract failed] {category_url}: {exc}")
+                extracted = {}
+            rows = (extracted or {}).get("results") or []
+            extra = ""
+            if rows:
+                extra = str(rows[0].get("raw_content") or rows[0].get("content") or "")
+            if extra:
+                cards = jobsdb_postings_from_listing_text(
+                    extra, MAX_JOBSDB_POSTINGS_PER_CATEGORY
+                )
+        grown: List[dict] = []
+        for card in cards:
+            posting_url = normalize_listing_url(card.get("url") or "")
+            if not posting_url or not is_job_posting_url(posting_url):
+                continue
+            try:
+                html = fetch_page_text(posting_url)
+            except Exception as exc:
+                print(f"   ⏭️  [JobsDB fetch failed] {posting_url}: {exc}")
+                continue
+            content = html_to_visible_text(html)
+            if len(content) < 80:
+                print(f"   ⏭️  [JobsDB page too short] {posting_url}")
+                continue
+            title = (card.get("title") or "").strip() or title_from_job_url(posting_url)
+            grown.append(
+                {
+                    "url": posting_url,
+                    "title": title,
+                    "content": content[:8000],
+                    "raw_content": content[:20000],
+                    "published_date": seed.get("published_date"),
+                }
+            )
+        print(
+            f"   ↪️  [JobsDB expanded] {category_url} → {len(grown)} posting(s)"
+        )
+        try:
+            from activity_logger import log_activity
+            log_activity(
+                "Rex",
+                f"JobsDB category expanded: {len(grown)} postings from {category_url}",
+            )
+        except Exception:
+            pass
+        return grown
+
+    def _expand_jobsdb_hits(self, items: List[dict]) -> List[dict]:
+        """Keep posting URLs; expand a few JobsDB category pages into vacancies."""
+        posting_items: List[dict] = []
+        expanded = 0
+        for item in items:
+            url = item.get("url") or ""
+            if is_job_posting_url(url):
+                posting_items.append(item)
+                continue
+            if (
+                expanded >= MAX_JOBSDB_CATEGORY_EXPAND_PER_SEARCH
+                or not is_jobsdb_category_url(url)
+            ):
+                continue
+            grown = self._jobsdb_postings_from_category(url, item)
+            if not grown:
+                continue
+            expanded += 1
+            posting_items.extend(grown)
+        return posting_items
+
+    def _hkstp_postings_from_listing(self, listing_url: str, seed: dict) -> List[dict]:
+        """Turn the HKSTP Talent Pool index into /job/{id}/{slug} vacancies.
+
+        # Ref: https://talentjobseeker.hkstp.org/ — Tavily often returns the home index
+        """
+        blob = str(seed.get("raw_content") or seed.get("content") or "")
+        cards = hkstp_postings_from_listing_text(blob, MAX_HKSTP_POSTINGS_PER_LISTING)
+        if len(cards) < 2:
+            try:
+                extracted = self.tavily.extract(urls=[listing_url])
+            except Exception as exc:
+                print(f"⚠️ [HKSTP listing extract failed] {listing_url}: {exc}")
+                extracted = {}
+            rows = (extracted or {}).get("results") or []
+            extra = ""
+            if rows:
+                extra = str(rows[0].get("raw_content") or rows[0].get("content") or "")
+            if extra:
+                cards = hkstp_postings_from_listing_text(
+                    extra, MAX_HKSTP_POSTINGS_PER_LISTING
+                )
+        grown: List[dict] = []
+        for card in cards:
+            posting_url = normalize_listing_url(card.get("url") or "")
+            if not posting_url or not is_job_posting_url(posting_url):
+                continue
+            try:
+                html = fetch_page_text(posting_url)
+            except Exception as exc:
+                print(f"   ⏭️  [HKSTP fetch failed] {posting_url}: {exc}")
+                continue
+            content = html_to_visible_text(html)
+            if len(content) < 80:
+                print(f"   ⏭️  [HKSTP page too short] {posting_url}")
+                continue
+            title = (card.get("title") or "").strip() or title_from_job_url(posting_url)
+            grown.append(
+                {
+                    "url": posting_url,
+                    "title": title,
+                    "content": content[:8000],
+                    "raw_content": content[:20000],
+                    "published_date": seed.get("published_date"),
+                }
+            )
+        print(f"   ↪️  [HKSTP expanded] {listing_url} → {len(grown)} posting(s)")
+        try:
+            from activity_logger import log_activity
+            log_activity(
+                "Rex",
+                f"HKSTP listing expanded: {len(grown)} postings from {listing_url}",
+            )
+        except Exception:
+            pass
+        return grown
+
+    def _expand_hkstp_hits(self, items: List[dict]) -> List[dict]:
+        """Keep HKSTP vacancy URLs; expand the Talent Pool home/index into /job ids."""
+        posting_items: List[dict] = []
+        expanded = 0
+        for item in items:
+            url = item.get("url") or ""
+            if is_job_posting_url(url):
+                posting_items.append(item)
+                continue
+            if expanded >= MAX_HKSTP_LISTING_EXPAND_PER_SEARCH or not is_hkstp_listing_url(url):
+                continue
+            grown = self._hkstp_postings_from_listing(url, item)
+            if not grown:
+                continue
+            expanded += 1
+            posting_items.extend(grown)
+        return posting_items
 
     def discover_company_career_domains(self, company: str) -> List[str]:
         """Find an employer's own career host when it is not in the registry.
@@ -1249,7 +1582,11 @@ class TalentScoutAgent:
             if not domains:
                 continue
             print(f"🔍 [Web Search:{lane_name}] {hk_query}")
-            for item in self._tavily_search(hk_query, domains, max_results_per_lane):
+            for item in self._expand_hkstp_hits(
+                self._expand_jobsdb_hits(
+                    self._tavily_search(hk_query, domains, max_results_per_lane)
+                )
+            ):
                 url = item.get("url")
                 if not url or not is_trusted_job_url(url, extra_domains or ()):
                     continue

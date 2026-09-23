@@ -7,7 +7,17 @@ import JobCard from './JobCard'
 import JobShelfPanel from './JobShelfPanel'
 import { api } from '../lib/api'
 
-const COLUMN_KEYS = ['discovered', 'vetting', 'vetted', 'materials', 'applied']
+export const PIPELINE_STAGES = [
+  { key: 'discovered', color: '#64748b' },
+  { key: 'vetting', color: '#06b6d4' },
+  { key: 'vetted', color: '#10b981' },
+  { key: 'materials', color: '#f59e0b' },
+  { key: 'applied', color: '#f43f5e' },
+]
+
+export const COLUMN_KEYS = PIPELINE_STAGES.map((col) => col.key)
+
+const SHELF_STAGE_KEYS = ['low_score', 'expired', 'unconsiderable']
 
 function classify(job, dossierByCompany) {
   if (job.application_ready) return 'applied'
@@ -38,20 +48,26 @@ function Column({ col, jobs, dossierByCompany, onSelect, t }) {
           <div className="font-mono text-[12px] text-slate-700 text-center py-6">{t('kanban.empty')}</div>
         )}
         {jobs.map((job) => (
-          <JobCard key={job.id} job={job} dossier={lookupDossier(job, dossierByCompany) || job.dossier} onClick={() => onSelect(job)} />
+          <JobCard
+            key={job.id}
+            job={job}
+            dossier={lookupDossier(job, dossierByCompany) || job.dossier}
+            onClick={() => onSelect(job, col.key)}
+          />
         ))}
       </div>
     </div>
   )
 }
 
-export default function PipelineKanban({ candidateId, onSelectJob, tick }) {
+export default function PipelineKanban({ candidateId, onSelectJob, onJobOrderChange, tick }) {
   const { t } = useTranslation()
   const [jobs, setJobs] = useState([])
   const [dossiers, setDossiers] = useState([])
   const [loading, setLoading] = useState(true)
   const [shelfOpen, setShelfOpen] = useState(false)
   const [shelfCounts, setShelfCounts] = useState({ low_score: 0, expired: 0, unconsiderable: 0 })
+  const [shelfJobs, setShelfJobs] = useState({ low_score: [], expired: [], unconsiderable: [] })
 
   useEffect(() => {
     let active = true
@@ -66,6 +82,11 @@ export default function PipelineKanban({ candidateId, onSelectJob, tick }) {
         setJobs(j.items || [])
         setDossiers(d || [])
         if (shelf?.counts) setShelfCounts(shelf.counts)
+        setShelfJobs({
+          low_score: shelf?.low_score || [],
+          expired: shelf?.expired || [],
+          unconsiderable: shelf?.unconsiderable || [],
+        })
       } catch { /* backend not up */ }
       finally { if (active) setLoading(false) }
     }
@@ -93,13 +114,20 @@ export default function PipelineKanban({ candidateId, onSelectJob, tick }) {
     return m
   }, [jobs, dossierByCompany])
 
-  const COLUMNS = [
-    { key: 'discovered', color: '#64748b' },
-    { key: 'vetting', color: '#06b6d4' },
-    { key: 'vetted', color: '#10b981' },
-    { key: 'materials', color: '#f59e0b' },
-    { key: 'applied', color: '#f43f5e' },
-  ]
+  const jobsByStage = useMemo(() => {
+    const m = {}
+    for (const key of COLUMN_KEYS) m[key] = byCol[key].map((job) => job.id)
+    for (const key of SHELF_STAGE_KEYS) {
+      m[key] = (shelfJobs[key] || []).map((job) => job.id)
+    }
+    return m
+  }, [byCol, shelfJobs])
+
+  useEffect(() => {
+    onJobOrderChange?.(jobsByStage)
+  }, [jobsByStage, onJobOrderChange])
+
+  const COLUMNS = PIPELINE_STAGES
 
   const shelfTotal = (shelfCounts.low_score || 0) + (shelfCounts.expired || 0) + (shelfCounts.unconsiderable || 0)
 
@@ -136,9 +164,9 @@ export default function PipelineKanban({ candidateId, onSelectJob, tick }) {
         open={shelfOpen}
         tick={tick}
         onClose={() => setShelfOpen(false)}
-        onSelectJob={(job) => {
+        onSelectJob={(job, shelfStage) => {
           setShelfOpen(false)
-          onSelectJob(job)
+          onSelectJob(job, shelfStage)
         }}
       />
     </section>

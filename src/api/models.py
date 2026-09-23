@@ -102,6 +102,8 @@ class JobOut(BaseModel):
     cv_status: Optional[str] = None
     cv_pdf_path: Optional[str] = None
     cv_typ_path: Optional[str] = None
+    cover_letter_pdf_path: Optional[str] = None
+    cover_letter_typ_path: Optional[str] = None
     application_ready: Optional[bool] = None
     application_checklist_path: Optional[str] = None
     expired: Optional[bool] = None  # dashboard-managed expiry flag
@@ -244,10 +246,16 @@ class AgentRunRequest(BaseModel):
     candidate_id: Optional[str] = None
     min_score: Optional[int] = None
     query: Optional[str] = None            # Agent 1 only
+    job_url: Optional[str] = Field(
+        default=None,
+        description="Agent 1 pasted job posting URL. # Ref: user-supplied listing ingest",
+    )
     company: Optional[str] = None          # Agents 2/3/4
     job_id: Optional[int] = None           # Agents 2/3/4
-    force_refresh: bool = False             # Agent 2 only
+    force_refresh: bool = False             # Dana / Leo / Clara per-job re-run
+    force: bool = False                    # Dana: skip score gate (manual override)
     template: Optional[str] = None          # Agent 3 Canvas layout id
+    document: Optional[str] = None          # Agent 3: cv | cover_letter (one file)
 
 
 class AgentStatus(BaseModel):
@@ -299,9 +307,19 @@ class TelegramBotOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ProfileBasics(BaseModel):
+    """Identity and contact used on Leo CV / cover letter headers.
+
+    # Ref: profile basics — email/phone plus optional address and profile URLs
+    """
     model_config = ConfigDict(extra="allow")
     name: str
     location: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    website: Optional[str] = None
+    github: Optional[str] = None
+    linkedin: Optional[str] = None
     target_roles: list[str] = Field(default_factory=list)
     min_expected_salary_hkd: Optional[int] = None
     languages: list[str] = Field(default_factory=list)
@@ -314,18 +332,58 @@ class EducationItem(BaseModel):
     year: Optional[str] = None  # range string e.g. "2020 - 2024"
 
 
-class ExperienceItem(BaseModel):
+class ExperienceRole(BaseModel):
+    """One title at an employer. Promotions are extra rows, not a new company.
+
+    # Ref: same-company title change — own period / highlights / skills
+    """
     model_config = ConfigDict(extra="allow")
-    company: str
     role: Optional[str] = None
     period: Optional[str] = None
     highlights: list[str] = Field(default_factory=list)
     skills_used: list[str] = Field(default_factory=list)
 
 
+class ExperienceItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    company: str
+    roles: list[ExperienceRole] = Field(default_factory=list)
+    role: Optional[str] = None
+    period: Optional[str] = None
+    highlights: list[str] = Field(default_factory=list)
+    skills_used: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def fold_legacy_and_sync_latest(self) -> "ExperienceItem":
+        if not self.roles and (self.role or self.period or self.highlights or self.skills_used):
+            self.roles = [
+                ExperienceRole(
+                    role=self.role,
+                    period=self.period,
+                    highlights=list(self.highlights),
+                    skills_used=list(self.skills_used),
+                )
+            ]
+        if self.roles:
+            latest = self.roles[0]
+            self.role = latest.role
+            self.period = latest.period
+            self.highlights = list(latest.highlights)
+            self.skills_used = list(latest.skills_used)
+        return self
+
+
 class ProjectItem(BaseModel):
+    """A shipped system: employment delivery or personal/side work.
+
+    # Ref: profile projects — role + is_side_project for Leo CV labels
+    """
     model_config = ConfigDict(extra="allow")
     name: str
+    role: Optional[str] = None
+    is_side_project: bool = False
+    period: Optional[str] = None
+    employer: Optional[str] = None
     description: Optional[str] = None
     tech_stack: list[str] = Field(default_factory=list)
 
@@ -338,6 +396,28 @@ class CertificationItem(BaseModel):
     category: Optional[str] = None
 
 
+class LanguageItem(BaseModel):
+    """Spoken/written language with CEFR-style or native/fluent label.
+
+    # Ref: HK CV Languages section — not programming languages
+    """
+    model_config = ConfigDict(extra="allow")
+    name: str
+    proficiency: Optional[str] = None
+
+
+class AwardItem(BaseModel):
+    """Scholarship, competition, or professional award.
+
+    # Ref: HK CV Awards / Honours — separate from certifications
+    """
+    model_config = ConfigDict(extra="allow")
+    name: str
+    issuer: Optional[str] = None
+    year: Optional[int] = None
+    description: Optional[str] = None
+
+
 class Profile(BaseModel):
     """Full candidate profile written to config/master_profile.json or config/profiles/{id}.json."""
     model_config = ConfigDict(extra="allow")
@@ -347,8 +427,27 @@ class Profile(BaseModel):
     experience: list[ExperienceItem] = Field(default_factory=list)
     projects: list[ProjectItem] = Field(default_factory=list)
     certifications: list[CertificationItem] = Field(default_factory=list)
+    languages: list[LanguageItem] = Field(default_factory=list)
+    awards: list[AwardItem] = Field(default_factory=list)
     acceptance_context: Optional[dict] = None  # PAC from Milo (free-form dict, round-trips)
     milo_readme_path: Optional[str] = None
+
+    @model_validator(mode="after")
+    def sync_language_labels(self) -> "Profile":
+        """Keep basics.languages as display strings for Leo / Typst.
+
+        # Ref: templates/resume.typ.j2 Languages section
+        """
+        if self.languages:
+            labels: list[str] = []
+            for item in self.languages:
+                name = (item.name or "").strip()
+                if not name:
+                    continue
+                level = (item.proficiency or "").strip()
+                labels.append(f"{name} ({level})" if level else name)
+            self.basics.languages = labels
+        return self
 
 
 class CreateProfileRequest(BaseModel):
@@ -356,6 +455,16 @@ class CreateProfileRequest(BaseModel):
     id: str  # filename stem, validated server-side against [A-Za-z0-9_-]+
     name: str
     location: Optional[str] = "Hong Kong"
+    linkedin: Optional[str] = None  # stored handle only; fetch is a separate button
+
+
+class LinkedInImportRequest(BaseModel):
+    """Body for POST /api/candidates/import-linkedin.
+
+    # Ref: public /in/{slug} only — user-supplied username or URL
+    """
+    username: str
+    candidate_id: Optional[str] = None
 
 
 class JobStatusUpdate(BaseModel):

@@ -39,6 +39,12 @@ from talent_scout_agent import (  # noqa: E402
     passes_dana_composite_gate,
 )
 
+_VALIDATORS_DIR = Path(__file__).resolve().parent.parent / "validators"
+if str(_VALIDATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(_VALIDATORS_DIR))
+
+from system_one import should_rerun_dossier  # noqa: E402
+
 from listing_filters import (  # noqa: E402
     listing_check_verdict,
     listing_text_supports_title,
@@ -180,8 +186,22 @@ def profile_brief(profile: dict) -> str:
     """Compact candidate context for the research LLM. Does not invent missing facts."""
     basics = profile.get("basics") or {}
     skills: List[str] = []
+    recent_roles: List[dict] = []
     for job in profile.get("experience") or []:
-        skills.extend(job.get("skills_used") or [])
+        if not isinstance(job, dict):
+            continue
+        company = job.get("company")
+        nested = job.get("roles")
+        stints = nested if isinstance(nested, list) and nested else [job]
+        for stint in stints:
+            if not isinstance(stint, dict):
+                continue
+            skills.extend(stint.get("skills_used") or [])
+            recent_roles.append({
+                "company": company,
+                "role": stint.get("role"),
+                "highlights": stint.get("highlights"),
+            })
     for project in profile.get("projects") or []:
         skills.extend(project.get("tech_stack") or [])
     unique_skills = list(dict.fromkeys(skills))
@@ -191,14 +211,7 @@ def profile_brief(profile: dict) -> str:
             "target_roles": basics.get("target_roles"),
             "min_expected_salary_hkd": basics.get("min_expected_salary_hkd"),
             "skills": unique_skills,
-            "recent_roles": [
-                {
-                    "company": item.get("company"),
-                    "role": item.get("role"),
-                    "highlights": item.get("highlights"),
-                }
-                for item in (profile.get("experience") or [])
-            ],
+            "recent_roles": recent_roles,
         },
         ensure_ascii=False,
     )
@@ -1048,11 +1061,15 @@ Research backend: {self.backend}
         jd_snippets: str = "",
         force_refresh: bool = False,
         min_score: int = MIN_MATCH_SCORE,
+        seed_jobs: Optional[List[dict]] = None,
     ) -> Optional[CompanyDueDiligence]:
         if not is_usable_company_name(company_name):
             print(f"⏭️  [Skip] cannot research placeholder employer: {company_name!r}")
             return None
-        live = self.live_jobs_for_research(company_name, min_score=min_score)
+        if seed_jobs is not None:
+            live = [job for job in seed_jobs if job]
+        else:
+            live = self.live_jobs_for_research(company_name, min_score=min_score)
         if not live:
             print(
                 f"⏭️  [Skip] no live listings left for {company_name} "
@@ -1068,13 +1085,26 @@ Research backend: {self.backend}
         )
         job_urls = " ".join(dict.fromkeys(j["job_url"] for j in live if j.get("job_url")))
         jd_snippets = "\n".join(j.get("jd_snippet") or "" for j in live)
-        if not force_refresh and self.db_manager.has_current_dossier(company_name):
-            print(f"♻️  [Cache hit] deep dossier already stored for {company_name}")
+        meta = self.db_manager.get_dossier_meta(company_name)
+        has_dossier = self.db_manager.has_current_dossier(company_name)
+        decision = should_rerun_dossier(
+            has_dossier=has_dossier,
+            dossier_updated_at=(meta or {}).get("updated_at") if meta else None,
+            dossier_confidence=(meta or {}).get("confidence") if meta else None,
+            newest_job_created_at=self.db_manager.latest_job_created_at(company_name),
+            force=force_refresh,
+        )
+        if not decision.proceed:
+            print(f"♻️  [System One skip research] {company_name}: {decision.reason}")
+            log_activity(
+                "Dana",
+                f"System One skip research {company_name}: {decision.reason}",
+            )
             return None
-        log_activity("Dana", f"Research started for {company_name}")
+        log_activity("Dana", f"Research started for {company_name} ({decision.reason})")
         hits = self.search_company_background(
             company_name,
-            force_refresh=force_refresh,
+            force_refresh=force_refresh or has_dossier,
             job_urls=job_urls,
             job_titles=job_titles,
             jd_snippets=jd_snippets,
@@ -1167,24 +1197,34 @@ Research backend: {self.backend}
         force_refresh: bool = False,
         company: Optional[str] = None,
         job_id: Optional[int] = None,
+        force: bool = False,
     ) -> int:
-        """Research high-match employers. Optionally limit to one company or one job id."""
+        """Research high-match employers. Optionally limit to one company or one job id.
+
+        When ``job_id`` is specified or ``force`` is True, the score gate is
+        skipped — the user is explicitly choosing to research this job
+        regardless of its composite match score. The automated pipeline
+        (no job_id, no force) still enforces ``min_score``.
+        """
         if job_id is not None:
             job = self.db_manager.get_job_by_id(job_id)
             if not job:
                 print(f"❌ No job_postings row with id={job_id}")
                 return 0
-            if not passes_dana_composite_gate(job.get("match_score") or 0, min_score):
+            # Per-job dashboard run: skip the composite gate. Automated queue
+            # (no job_id) still uses min_score.
+            # Ref: manual override — job detail Run Dana bypasses the score gate
+            company_name = job["company_name"]
+            score = int(job.get("match_score") or 0)
+            if not passes_dana_composite_gate(score, min_score):
                 print(
-                    f"⏭️  [Skip] job #{job_id} composite={job.get('match_score')} "
-                    f"< min composite {min_score}"
+                    f"ℹ️  [Manual] job #{job_id} composite={score} "
+                    f"< min {min_score}; researching anyway"
                 )
                 log_activity(
                     "Dana",
-                    f"Skipped job #{job_id}: composite below {min_score}",
+                    f"Score gate bypassed for job #{job_id} (composite={score})",
                 )
-                return 0
-            company_name = job["company_name"]
             if not is_usable_company_name(company_name):
                 resolved = resolve_employer_name(job["job_url"], job["jd_snippet"])
                 if not resolved:
@@ -1202,6 +1242,7 @@ Research backend: {self.backend}
                 jd_snippets=job["jd_snippet"],
                 force_refresh=True,
                 min_score=min_score,
+                seed_jobs=[job],
             )
             written = 1 if result else 0
             print(f"\n✅ 單筆調查完成！新增 {written} 份 company_dossiers。")
@@ -1216,7 +1257,7 @@ Research backend: {self.backend}
         recovered = self.repair_anonymous_jobs(min_score=min_score)
         pending = self.db_manager.list_companies_pending_diligence(
             min_score=min_score,
-            include_existing=force_refresh,
+            include_existing=True,
         )
         if company:
             needle = company.strip().lower()
@@ -1273,6 +1314,11 @@ if __name__ == "__main__":
         default=None,
         help="Research only companies whose name contains this text (e.g. ATAL)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the score gate — research all jobs regardless of match_score",
+    )
     args = parser.parse_args()
     load_dotenv(PROJECT_ROOT / ".env")
     from env_keys import deepseek_api_key, tavily_api_key
@@ -1296,6 +1342,7 @@ if __name__ == "__main__":
         force_refresh=args.force_refresh,
         company=args.company,
         job_id=args.job_id,
+        force=args.force,
     )
     from llm_usage import finalize_usage
     finalize_usage("Dana")

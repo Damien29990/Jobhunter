@@ -7,7 +7,7 @@ import { Archive, Ban, Clock, TrendingDown, X } from 'lucide-react'
 import JobCard from './JobCard'
 import { api } from '../lib/api'
 
-function Section({ icon: Icon, color, title, hint, jobs, onSelect }) {
+function Section({ icon: Icon, color, title, hint, jobs, stageKey, onSelect }) {
   const { t } = useTranslation()
   return (
     <section className="flex flex-col min-h-0 min-w-0 flex-1">
@@ -22,7 +22,12 @@ function Section({ icon: Icon, color, title, hint, jobs, onSelect }) {
           <div className="font-mono text-[12px] text-slate-600 text-center py-8">{t('shelf.empty')}</div>
         ) : (
           jobs.map((job) => (
-            <JobCard key={job.id} job={job} dossier={job.dossier} onClick={() => onSelect(job)} />
+            <JobCard
+              key={job.id}
+              job={job}
+              dossier={job.dossier}
+              onClick={() => onSelect(job, stageKey)}
+            />
           ))
         )}
       </div>
@@ -93,6 +98,7 @@ export default function JobShelfPanel({ open, onClose, onSelectJob, tick }) {
               title={t('shelf.lowScore')}
               hint={t('shelf.lowScoreHint')}
               jobs={low}
+              stageKey="low_score"
               onSelect={onSelectJob}
             />
             <Section
@@ -101,6 +107,7 @@ export default function JobShelfPanel({ open, onClose, onSelectJob, tick }) {
               title={t('shelf.expired')}
               hint={t('shelf.expiredHint')}
               jobs={expired}
+              stageKey="expired"
               onSelect={onSelectJob}
             />
             <Section
@@ -109,6 +116,7 @@ export default function JobShelfPanel({ open, onClose, onSelectJob, tick }) {
               title={t('shelf.unconsiderable')}
               hint={t('shelf.unconsiderableHint')}
               jobs={uncon}
+              stageKey="unconsiderable"
               onSelect={onSelectJob}
             />
           </div>

@@ -11,6 +11,7 @@ export const AGENTS = [
     desk: 'reception',
     quickAction: {
       fields: [
+        { name: 'linkedin', labelKey: 'tutorial.fields.linkedinUsername', type: 'linkedin' },
         { name: 'cv_file', labelKey: 'tutorial.fields.cvFile', type: 'cvfile' },
       ],
       actionKey: 'tutorial.actions.milo',
@@ -24,6 +25,7 @@ export const AGENTS = [
     desk: 'terminal',
     quickAction: {
       fields: [
+        { name: 'job_url', labelKey: 'tutorial.fields.jobUrl', type: 'text', placeholder: 'https://hk.jobsdb.com/job/80001234/software-engineer' },
         { name: 'query', labelKey: 'tutorial.fields.query', type: 'text', placeholder: 'Senior Backend Engineer Python IoT' },
         { name: 'min_score', labelKey: 'tutorial.fields.minScore', type: 'number', default: 75 },
       ],
@@ -42,6 +44,7 @@ export const AGENTS = [
         { name: 'job_id', labelKey: 'tutorial.fields.jobId', type: 'jobselect' },
         { name: 'min_score', labelKey: 'tutorial.fields.minScore', type: 'number', default: 80 },
         { name: 'force_refresh', labelKey: 'tutorial.fields.forceRefresh', type: 'checkbox', default: false },
+        { name: 'force', labelKey: 'tutorial.fields.forceDana', type: 'checkbox', default: false },
       ],
       actionKey: 'tutorial.actions.dana',
     },

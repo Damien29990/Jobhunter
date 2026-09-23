@@ -10,7 +10,7 @@ import { AGENT_BY_KEY } from '../lib/agents'
 
 export const JOB_STAGES = [
   { agentKey: 'dana', tab: 'dossier', has: (job, dossier) => !!(dossier || job?.dossier) },
-  { agentKey: 'leo', tab: 'cv', has: (job) => !!(job?.cv_pdf_path || job?.cv_typ_path) },
+  { agentKey: 'leo', tab: 'cv', has: (job) => !!(job?.cv_pdf_path || job?.cv_typ_path || job?.cover_letter_pdf_path || job?.cover_letter_typ_path) },
   { agentKey: 'clara', tab: 'pack', has: (job) => !!job?.application_checklist_path },
 ]
 
@@ -52,7 +52,7 @@ export function useJobStageRunner({
     }
   }, [agentStatus, onRefresh, busyKey])
 
-  const run = useCallback(async (agentKey) => {
+  const run = useCallback(async (agentKey, extra = {}) => {
     if (!job?.id) return
     setError(null)
     setBusyKey(agentKey)
@@ -60,7 +60,16 @@ export function useJobStageRunner({
       const body = { job_id: Number(job.id) }
       if (candidateId) body.candidate_id = candidateId
       if (job.company_name) body.company = job.company_name
-      if (agentKey === 'dana') body.force_refresh = true
+      if (agentKey === 'dana') {
+        body.force_refresh = true
+        body.force = true
+      }
+      if (agentKey === 'leo' || agentKey === 'clara') {
+        body.force_refresh = true
+      }
+      if (extra.force_refresh) body.force_refresh = true
+      if (extra.force) body.force = true
+      if (extra.document) body.document = extra.document
       const res = await api.runAgent(api.agentRoute[agentKey], body)
       if (res?.ok) {
         onStarted?.()
@@ -137,7 +146,7 @@ function StageButton({ stage, runner, highlight, onSelectTab }) {
       onClick={() => {
         onSelectTab?.(stage.tab)
         if (working) stop(stage.agentKey)
-        else run(stage.agentKey)
+        else run(stage.agentKey, hasOutput ? { force_refresh: true } : {})
       }}
       className={`flex-1 min-w-0 panel px-2 py-2 flex flex-col items-start gap-1 text-left disabled:opacity-50 ${
         highlight ? 'bg-ink-700' : ''
@@ -191,7 +200,7 @@ export function JobStageStrip({ runner, activeTab, onSelectTab }) {
   )
 }
 
-export function StagePaneAction({ agentKey, runner }) {
+export function StagePaneAction({ agentKey, runner, extra = {} }) {
   const { t } = useTranslation()
   const stage = JOB_STAGES.find((s) => s.agentKey === agentKey)
   if (!stage || !runner.job || !stage.has(runner.job, runner.dossier)) return null
@@ -203,7 +212,7 @@ export function StagePaneAction({ agentKey, runner }) {
     <button
       type="button"
       disabled={starting}
-      onClick={() => (working ? runner.stop(agentKey) : runner.run(agentKey))}
+      onClick={() => (working ? runner.stop(agentKey) : runner.run(agentKey, { force_refresh: true, ...extra }))}
       className="font-mono text-[12px] px-2 py-1 panel inline-flex items-center gap-1.5 text-slate-200 disabled:opacity-50 shrink-0"
       title={t(`detail.stage.${agentKey}Title`)}
     >

@@ -73,3 +73,32 @@ def test_swapped_years_are_corrected() -> None:
     )
     start, end, _ = parse_period_bounds(rows[0]["period"])
     assert start and end and start < end
+
+
+def test_same_company_promotions_keep_separate_periods() -> None:
+    rows = normalize_experience_list(
+        [
+            {
+                "company": "EC Goal",
+                "roles": [
+                    {
+                        "role": "Software Engineer",
+                        "period": "2024-11 – 2025-06",
+                        "highlights": ["Built APIs"],
+                        "skills_used": ["Python"],
+                    },
+                    {
+                        "role": "Senior Software Engineer",
+                        "period": "2025-06 – Present",
+                        "highlights": ["Led platform"],
+                        "skills_used": ["FastAPI"],
+                    },
+                ],
+            }
+        ]
+    )
+    assert len(rows) == 1
+    titles = [stint["role"] for stint in rows[0]["roles"]]
+    assert titles[0] == "Senior Software Engineer"
+    assert titles[1] == "Software Engineer"
+    assert rows[0]["role"] == "Senior Software Engineer"

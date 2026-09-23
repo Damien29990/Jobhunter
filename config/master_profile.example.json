@@ -2,6 +2,12 @@
   "basics": {
     "name": "Your Name",
     "location": "Hong Kong",
+    "email": "",
+    "phone": "",
+    "address": "",
+    "website": "",
+    "github": "",
+    "linkedin": "",
     "target_roles": ["Software Engineer"],
     "min_expected_salary_hkd": 0,
     "languages": ["Cantonese", "English"]
@@ -11,6 +17,8 @@
   "experience": [],
   "projects": [],
   "certifications": [],
+  "languages": [],
+  "awards": [],
   "acceptance_context": {
     "core_transferable_skills": [],
     "target_industries": [],
