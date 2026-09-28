@@ -6,17 +6,48 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 TYPST_SPECIAL = ("#", "$", "*", "_", "<", ">", "@", "\\", "[", "]")
 
 _GITHUB_HOST = re.compile(r"(?:^|https?://)?(?:www\.)?github\.com/([^/?#]+)", re.I)
-_LINKEDIN_IN = re.compile(
-    r"(?:^|https?://)?(?:[a-z]{2}\.)?(?:www\.)?linkedin\.com/(?:in|pub|mwlite/in)/([^/?#]+)",
+_SCHEME = re.compile(r"^https?://", re.I)
+_LNKD_SHORT = re.compile(
+    r"(?:^|https?://)?(?:www\.)?lnkd\.in/([A-Za-z0-9_-]{4,24})",
     re.I,
 )
-_SCHEME = re.compile(r"^https?://", re.I)
+_MEMBER_ID = re.compile(r"^ACoAA[A-Za-z0-9_-]{8,120}$")
+_LINKEDIN_SLUG = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{1,98}[A-Za-z0-9])?$")
+_LINKEDIN_RESERVED = frozenset(
+    {
+        "in", "pub", "company", "school", "jobs", "feed", "login", "signup",
+        "mwlite", "overlay", "details", "edit", "sales", "recruiter", "talent",
+    }
+)
+_PATH_SUFFIXES = frozenset(
+    {
+        "overlay", "details", "recent-activity", "edit", "about-this-profile",
+        "en", "fr", "de", "es", "it", "pt", "nl", "ja", "ko", "ru", "tr", "pl",
+        "sv", "da", "fi", "no", "cs", "ro", "hu", "th", "vi", "id", "ms", "ar",
+        "he", "zh", "zh-cn", "zh-tw", "zh-hk", "zh-hant", "zh-hans",
+    }
+)
+_PLACEHOLDER_NAMES = frozenset({"your name", "name", "candidate", "untitled"})
+
+
+@dataclass(frozen=True)
+class LinkedInProfileRef:
+    """Public profile pointer after LinkedIn 2026 share-link changes.
+
+    # Ref: /in/{slug}, /in/?profileId=ACoAA…, /in/ACoAA…, lnkd.in/{code}
+    """
+
+    handle: str
+    url: str
+    profile_id: str = ""
+    kind: str = "vanity"
 
 
 def _strip_handle(value: str) -> str:
@@ -45,33 +76,120 @@ def github_profile_url(raw: Optional[str]) -> str:
     return f"https://github.com/{user}"
 
 
-def linkedin_profile_url(raw: Optional[str]) -> str:
-    """Return https://www.linkedin.com/in/{slug} from a URL, /in/ path, or username."""
-    text = _strip_handle(raw or "")
-    if not text:
-        return ""
+def _query_member_id(query: str) -> str:
+    params = parse_qs(query or "", keep_blank_values=False)
+    for key in ("profileId", "miniProfileId", "memberId"):
+        values = params.get(key) or []
+        if values and values[0].strip():
+            return unquote(values[0].strip())
+    for key in ("miniProfileUrn", "profileUrn", "urn"):
+        values = params.get(key) or []
+        if not values:
+            continue
+        urn = unquote(values[0].strip())
+        if ":" in urn:
+            return urn.rsplit(":", 1)[-1]
+    return ""
+
+
+def _path_profile_slug(path: str) -> str:
+    parts = [p for p in unquote(path or "").strip("/").split("/") if p]
+    lowered = [p.lower() for p in parts]
+    for marker in ("in", "pub"):
+        if marker not in lowered:
+            continue
+        idx = lowered.index(marker)
+        rest = parts[idx + 1 :]
+        for segment in rest:
+            if segment.lower() in _PATH_SUFFIXES:
+                continue
+            if segment.lower() in _LINKEDIN_RESERVED:
+                return ""
+            return segment
+    if len(parts) >= 2 and parts[0].lower() == "mwlite" and parts[1].lower() == "in":
+        rest = parts[2:]
+        for segment in rest:
+            if segment.lower() not in _PATH_SUFFIXES:
+                return segment
+    return ""
+
+
+def parse_linkedin_profile_ref(raw: Optional[str]) -> Optional[LinkedInProfileRef]:
+    """Accept 2026 share links, member ids, short links, and classic /in/{slug}."""
+    text = (raw or "").strip()
+    if not text or any(ch.isspace() for ch in text):
+        return None
     text = text.lstrip("@")
-    match = _LINKEDIN_IN.search(text)
-    if match:
-        slug = match.group(1).strip("/")
-        return f"https://www.linkedin.com/in/{slug}" if slug else ""
-    if re.match(r"^in/", text, re.I):
-        slug = text.split("/", 1)[1].strip("/")
-        return f"https://www.linkedin.com/in/{slug}" if slug else ""
-    if _SCHEME.search(text) and "linkedin.com" in text.lower():
-        path = urlparse(text).path.strip("/")
-        parts = [p for p in path.split("/") if p]
-        if "in" in parts:
-            idx = parts.index("in")
-            if idx + 1 < len(parts):
-                return f"https://www.linkedin.com/in/{parts[idx + 1]}"
-        if parts:
-            return f"https://www.linkedin.com/in/{parts[-1]}"
-        return ""
-    slug = text.split("/")[-1].strip()
-    if not slug:
-        return ""
-    return f"https://www.linkedin.com/in/{slug}"
+    lower = text.lower()
+    blocked = (
+        "/company/",
+        "/school/",
+        "/jobs/",
+        "/sales/",
+        "/recruiter/",
+        "linkedin.com/company",
+        "linkedin.com/school",
+        "linkedin.com/jobs",
+        "linkedin.com/sales",
+        "linkedin.com/recruiter",
+    )
+    if any(token in lower for token in blocked):
+        return None
+
+    short = _LNKD_SHORT.search(text)
+    if short:
+        code = short.group(1)
+        return LinkedInProfileRef(
+            handle=code,
+            url=f"https://lnkd.in/{code}",
+            kind="shortlink",
+        )
+
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    member_from_query = _query_member_id(parsed.query)
+    slug = ""
+    if "linkedin.com" in host or host.endswith("linkedin.com"):
+        slug = _path_profile_slug(parsed.path)
+    elif re.match(r"^in/", text, re.I):
+        slug = _path_profile_slug("/" + text.split("?", 1)[0])
+    elif "linkedin.com" not in lower and "/" not in text.split("?")[0]:
+        slug = text.split("?")[0].strip("/")
+
+    token = slug or member_from_query
+    if not token:
+        return None
+    if token.lower() in _LINKEDIN_RESERVED:
+        return None
+
+    if _MEMBER_ID.match(token):
+        url = f"https://www.linkedin.com/in/{token}"
+        if not slug and member_from_query:
+            url = f"https://www.linkedin.com/in/?profileId={token}"
+        return LinkedInProfileRef(
+            handle=token,
+            url=url,
+            profile_id=token,
+            kind="member_id" if slug else "profile_id",
+        )
+    if not _LINKEDIN_SLUG.match(token):
+        return None
+    if len(token) < 3 or len(token) > 100:
+        return None
+    return LinkedInProfileRef(
+        handle=token,
+        url=f"https://www.linkedin.com/in/{token}",
+        profile_id=member_from_query if _MEMBER_ID.match(member_from_query) else "",
+        kind="vanity",
+    )
+
+
+def linkedin_profile_url(raw: Optional[str]) -> str:
+    """Return a clickable LinkedIn profile URL from a slug, member id, or share link."""
+    ref = parse_linkedin_profile_ref(raw)
+    return ref.url if ref else ""
 
 
 def website_url(raw: Optional[str]) -> str:
@@ -92,51 +210,23 @@ def github_handle(raw: Optional[str]) -> str:
 
 
 def linkedin_handle(raw: Optional[str]) -> str:
-    url = linkedin_profile_url(raw)
-    if not url:
-        return ""
-    return url.rstrip("/").rsplit("/", 1)[-1]
-
-
-# LinkedIn vanity URLs are 3–100 characters: letters, digits, hyphen.
-# Ref: LinkedIn public /in/{slug} — not company or job URLs
-_LINKEDIN_SLUG = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{1,98}[A-Za-z0-9])?$")
-_LINKEDIN_RESERVED = frozenset(
-    {"in", "pub", "company", "school", "jobs", "feed", "login", "signup", "mwlite"}
-)
-_PLACEHOLDER_NAMES = frozenset({"your name", "name", "candidate", "untitled"})
+    ref = parse_linkedin_profile_ref(raw)
+    return ref.handle if ref else ""
 
 
 def is_valid_linkedin_username(raw: Optional[str]) -> bool:
-    """True when the value is a public /in/ vanity slug (or URL to one).
+    """True for a public profile slug, ACoAA member id, profileId share link, or lnkd.in.
 
-    # Ref: Milo LinkedIn bootstrap — reject company pages and junk slugs
+    # Ref: LinkedIn 2026 mobile share uses /in/?profileId=ACoAA…
     """
-    text = (raw or "").strip()
-    if not text or any(ch.isspace() for ch in text):
-        return False
-    lower = text.lower()
-    blocked = (
-        "/company/",
-        "/school/",
-        "/jobs/",
-        "linkedin.com/company",
-        "linkedin.com/school",
-        "linkedin.com/jobs",
-    )
-    if any(token in lower for token in blocked):
-        return False
-    handle = linkedin_handle(text)
-    if not handle or handle.lower() in _LINKEDIN_RESERVED:
-        return False
-    if len(handle) < 3 or len(handle) > 100:
-        return False
-    return bool(_LINKEDIN_SLUG.match(handle))
+    return parse_linkedin_profile_ref(raw) is not None
 
 
 def name_from_linkedin_handle(handle: str) -> str:
     """Best-effort display name from a vanity slug (damien-yu → Damien Yu)."""
     slug = (handle or "").strip().strip("-")
+    if not slug or _MEMBER_ID.match(slug) or slug.lower().startswith("lnkd"):
+        return "Your Name"
     parts = [p for p in re.split(r"[-_]+", slug) if p and not p.isdigit()]
     if not parts:
         return slug.replace("-", " ").title() or "Your Name"

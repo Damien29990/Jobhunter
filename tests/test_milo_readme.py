@@ -14,6 +14,7 @@ if str(_AGENTS) not in sys.path:
 
 from milo_context import (
     MiloReadmeDraft,
+    candidate_id_for_profile_path,
     fallback_draft,
     live_chat_messages,
     milo_readme_path_for,
@@ -33,6 +34,12 @@ def test_readme_path_for_master_profile() -> None:
 def test_readme_path_for_named_profile() -> None:
     path = milo_readme_path_for(Path("config/profiles/alex.json"))
     assert path.name == "alex_milo.md"
+    assert path.parent.name == "profiles"
+
+
+def test_candidate_id_master_vs_named() -> None:
+    assert candidate_id_for_profile_path(Path("config/master_profile.json")) == "default"
+    assert candidate_id_for_profile_path(Path("config/profiles/Lychee.json")) == "Lychee"
 
 
 def test_refresh_during_first_twenty_then_every_batch() -> None:
@@ -52,6 +59,10 @@ def test_has_new_chat_watermark() -> None:
     assert has_new_chat_since_compress(profile, 6) is True
     path = last_compress_path_for(Path("config/master_profile.json"))
     assert path.name == "milo_last_compress.md"
+    assert path.parent.name == "config"
+    named = last_compress_path_for(Path("config/profiles/Lychee.json"))
+    assert named.name == "Lychee_milo_last_compress.md"
+    assert named.parent.name == "profiles"
 
 
 def test_live_chat_drops_system_rows() -> None:
@@ -81,8 +92,10 @@ def test_render_includes_skill_sections() -> None:
         live_message_count=20,
         revision=2,
         source="chat_batch_20",
+        profile_id="Lychee",
     )
     assert "name: milo-candidate-context" in md
+    assert "profile_id: Lychee" in md
     assert "revision: 2" in md
     assert "FastAPI" in md
     assert "Must stay in Hong Kong" in md

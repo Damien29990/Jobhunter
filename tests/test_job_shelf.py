@@ -9,7 +9,7 @@ _API = Path(__file__).resolve().parents[1] / "src" / "api"
 if str(_API) not in sys.path:
     sys.path.insert(0, str(_API))
 
-from gates import shelf_bucket  # noqa: E402
+from gates import is_kanban_visible, shelf_bucket  # noqa: E402
 
 
 def test_high_score_stays_on_kanban() -> None:
@@ -31,3 +31,10 @@ def test_expired_beats_low_score() -> None:
 def test_unconsiderable_beats_all() -> None:
     assert shelf_bucket(90, True, "UNCONSIDERABLE") == "unconsiderable"
     assert shelf_bucket(12, False, "unconsiderable") == "unconsiderable"
+
+
+def test_kanban_visible_skips_hidden_shelf() -> None:
+    assert is_kanban_visible(80, False, None) is True
+    assert is_kanban_visible(10, False, None) is False
+    assert is_kanban_visible(90, True, None) is False
+    assert is_kanban_visible(90, False, "UNCONSIDERABLE") is False

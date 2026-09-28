@@ -29,6 +29,8 @@ from listing_filters import (
     title_from_job_url,
     clean_listing_title,
     display_listing_title,
+    listing_duplicate_key,
+    parse_posted_at,
 )
 
 
@@ -91,6 +93,12 @@ def test_reject_search_and_index_urls() -> None:
     assert is_job_posting_url(
         "https://hk.linkedin.com/jobs/view/ai-full-stack-engineer-at-midas-analytics-4465495711"
     ) is True
+    assert is_job_posting_url(
+        "https://www.linkedin.com/jobs/search/?currentJobId=4465495711"
+    ) is True
+    assert normalize_listing_url(
+        "https://hk.linkedin.com/jobs/view/ai-full-stack-engineer-at-midas-analytics-4465495711"
+    ) == "https://www.linkedin.com/jobs/view/4465495711"
     assert is_job_posting_url("https://job-boards.greenhouse.io/hyphenconnect") is False
     assert is_junk_job_title("Jobs at Hyphen Connect Limited") is True
 
@@ -169,3 +177,38 @@ def test_hkstp_talent_pool_posting_vs_home() -> None:
     urls = {c["url"] for c in cards}
     assert posting in urls
     assert "https://talentjobseeker.hkstp.org/job/101786/Senior-Power-Electronics-R-D-Engineer" in urls
+
+
+def test_jobsdb_slug_and_tracking_collapse_to_job_id() -> None:
+    a = "https://hk.jobsdb.com/job/94495079/researcher-ai-and-data-science?utm_source=tavily"
+    b = "https://hk.jobsdb.com/job/94495079"
+    assert normalize_listing_url(a) == normalize_listing_url(b)
+    assert "/job/94495079" in normalize_listing_url(a)
+    assert "utm_source" not in normalize_listing_url(a)
+
+
+def test_parse_posted_at_from_iso_and_jd_text() -> None:
+    stamp = parse_posted_at("2026-09-10T00:00:00Z")
+    assert stamp.startswith("2026-09-10")
+    assert "+08:00" in stamp
+    from_text = parse_posted_at("Posted on: 10 Sep 2026\nHong Kong Productivity Council")
+    assert from_text.startswith("2026-09-10")
+    relative = parse_posted_at("Posted 12d ago")
+    assert relative.endswith("+08:00") or "+08:00" in relative
+    assert listing_duplicate_key(
+        "Hong Kong Productivity Council",
+        "Researcher, AI and Data Science",
+    ) == listing_duplicate_key(
+        "hong kong productivity council",
+        "Researcher,  AI and Data Science",
+    )
+    from listing_filters import listing_titles_same_vacancy
+
+    assert listing_titles_same_vacancy(
+        "Reseacher Ai And Data Science",
+        "Researcher, AI and Data Science",
+    )
+    assert not listing_titles_same_vacancy(
+        "Officer, AI and Data Science",
+        "Researcher, AI and Data Science",
+    )

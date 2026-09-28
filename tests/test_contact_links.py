@@ -44,6 +44,20 @@ def test_linkedin_from_in_path_and_url() -> None:
     )
 
 
+def test_linkedin_2026_share_and_member_id() -> None:
+    member = "ACoAADpA5CQBnR5PniLbi108ITQdzOXllP1ZfJ8"
+    from contact_links import is_valid_linkedin_username, parse_linkedin_profile_ref
+
+    share = f"https://www.linkedin.com/in/?profileId={member}"
+    assert is_valid_linkedin_username(share) is True
+    assert parse_linkedin_profile_ref(share).profile_id == member
+    overlay = "https://www.linkedin.com/in/damien-yu/overlay/about-this-profile/"
+    assert linkedin_profile_url(overlay) == "https://www.linkedin.com/in/damien-yu"
+    encoded = f"https://www.linkedin.com/in/{member}?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3A{member}"
+    assert is_valid_linkedin_username(encoded) is True
+    assert linkedin_profile_url("https://lnkd.in/abc12xyz") == "https://lnkd.in/abc12xyz"
+
+
 def test_linkedin_company_url_is_not_a_username() -> None:
     from contact_links import is_valid_linkedin_username
 

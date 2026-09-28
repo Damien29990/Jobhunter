@@ -481,7 +481,7 @@ class CVGeneratorAgent:
             """
             SELECT
                 j.id, j.job_url, j.job_title, j.company_name,
-                j.jd_snippet, j.match_score, j.recommendation_reason,
+                COALESCE(j.jd_full, j.jd_snippet) AS jd_snippet, j.match_score, j.recommendation_reason,
                 j.cv_status, d.dossier_json, d.vetting_verdict
             FROM job_postings j
             LEFT JOIN company_dossiers d
@@ -523,7 +523,7 @@ class CVGeneratorAgent:
             """
             SELECT
                 j.id, j.job_url, j.job_title, j.company_name,
-                j.jd_snippet, j.match_score, j.recommendation_reason,
+                COALESCE(j.jd_full, j.jd_snippet) AS jd_snippet, j.match_score, j.recommendation_reason,
                 j.cv_status, d.dossier_json, d.vetting_verdict
             FROM job_postings j
             LEFT JOIN company_dossiers d
@@ -959,6 +959,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Print Leo's Canvas catalog and exit",
     )
+    parser.add_argument(
+        "--profile",
+        default=str(DEFAULT_PROFILE_PATH),
+        help="Candidate JSON: config/master_profile.json or config/profiles/{id}.json",
+    )
     args = parser.parse_args()
 
     if args.list_templates:
@@ -975,6 +980,7 @@ if __name__ == "__main__":
     agent = CVGeneratorAgent(
         deepseek_api_key=deepseek_key,
         canvas_template_id=args.template,
+        profile_path=Path(args.profile),
     )
     agent.run_pipeline(
         min_score=args.min_score,

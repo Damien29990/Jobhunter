@@ -66,10 +66,25 @@ def now_hk_iso() -> str:
     return datetime.now(HK_TZ).isoformat(timespec="seconds")
 
 
+def candidate_id_for_profile_path(profile_path: Path) -> str:
+    """Map a profile JSON path to the SQLite / API candidate_id.
+
+    Master lives at config/master_profile.json → id ``default``.
+    Other people live at config/profiles/{id}.json → id is the stem.
+    # Ref: GET /api/candidates — default vs named profiles
+    """
+    path = Path(profile_path)
+    if path.name == "master_profile.json":
+        return "default"
+    return path.stem
+
+
 def milo_readme_path_for(profile_path: Path) -> Path:
     """Resolve the Milo README next to a candidate profile JSON.
 
-    # Ref: config/master_profile.json → config/milo_context.md
+    Master: config/milo_context.md
+    Named:  config/profiles/{id}_milo.md
+    # Ref: config/master_profile.json vs config/profiles/{id}.json
     """
     path = Path(profile_path)
     if path.name == "master_profile.json":
@@ -256,6 +271,7 @@ def render_milo_readme(
     live_message_count: int,
     revision: int,
     source: str,
+    profile_id: str = "default",
 ) -> str:
     """Render a skill-like Markdown README. Pure function.
 
@@ -270,6 +286,7 @@ def render_milo_readme(
     return (
         f"---\n"
         f"name: milo-candidate-context\n"
+        f"profile_id: {profile_id}\n"
         f"updated_at: {updated_at}\n"
         f"chat_messages: {live_message_count}\n"
         f"revision: {revision}\n"

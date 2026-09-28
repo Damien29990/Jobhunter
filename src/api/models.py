@@ -97,6 +97,7 @@ class JobOut(BaseModel):
     is_direct_hire: Optional[bool] = None
     recommendation_reason: Optional[str] = None
     jd_snippet: Optional[str] = None
+    jd_full: Optional[str] = None
     target_industry: Optional[str] = None
     career_advisory_note: Optional[str] = None
     cv_status: Optional[str] = None
@@ -109,6 +110,13 @@ class JobOut(BaseModel):
     expired: Optional[bool] = None  # dashboard-managed expiry flag
     user_status: Optional[str] = None
     unconsiderable: bool = False
+    application_status: Optional[str] = None
+    application_note: Optional[str] = None
+    employer_update_note: Optional[str] = None
+    application_status_at: Optional[str] = None
+    employer_update_at: Optional[str] = None
+    follow_up_needed: bool = False
+    posted_at: Optional[str] = None  # board publish time (Asia/Hong_Kong)
     created_at: Optional[str] = None
     dossier: Optional["CompanyDossierOut"] = None  # Dana brief; set by the API, not a DB column
 
@@ -136,6 +144,14 @@ class JobOut(BaseModel):
     def _derive_unconsiderable(self) -> "JobOut":
         status = (self.user_status or "").strip().upper()
         self.unconsiderable = status == "UNCONSIDERABLE"
+        try:
+            from application_followup import follow_up_needed as _follow_up_needed
+
+            self.follow_up_needed = _follow_up_needed(
+                self.application_status, self.application_ready
+            )
+        except Exception:
+            self.follow_up_needed = False
         return self
 
 
@@ -235,10 +251,12 @@ class CandidateProfile(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    person_id: Optional[int] = None
     name: str
     profile_path: str
     target_roles: list[str] = Field(default_factory=list)
     is_default: bool = False
+    is_master: bool = False
 
 
 class AgentRunRequest(BaseModel):
@@ -300,6 +318,24 @@ class TelegramBotOut(BaseModel):
     tg_url: Optional[str] = None
 
 
+class LinkedInMcpStatusOut(BaseModel):
+    """Where LinkedIn MCP is attached and how Jobhunter uses it.
+
+    # Ref: linkedin_mcp_client — FastAPI/Milo stdio, not Cursor
+    """
+    connected_in: str
+    command: str
+    tool: str
+    timeout_sec: int
+    session: str
+    cookie_env_set: bool
+    how: str
+    writes_profile: str
+    writes_cache: str
+    uvx_found: bool
+    ready: bool
+
+
 # ---------------------------------------------------------------------------
 # Profile editor models — strict typing, no Any. extra="allow" round-trips
 # any keys the editor doesn't manage so the agents still parse the file.
@@ -320,9 +356,39 @@ class ProfileBasics(BaseModel):
     website: Optional[str] = None
     github: Optional[str] = None
     linkedin: Optional[str] = None
+    headline: Optional[str] = None
+    summary: Optional[str] = None
     target_roles: list[str] = Field(default_factory=list)
     min_expected_salary_hkd: Optional[int] = None
     languages: list[str] = Field(default_factory=list)
+
+    @field_validator("languages", mode="before")
+    @classmethod
+    def coerce_language_labels(cls, value: object) -> list[str]:
+        """Accept CV/MCP {name, proficiency} objects; Leo still wants chips.
+
+        # Ref: Profile.languages LanguageItem vs basics.languages list[str]
+        """
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        labels: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    labels.append(text)
+                continue
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("language") or "").strip()
+            level = str(item.get("proficiency") or item.get("level") or "").strip()
+            if name and level:
+                labels.append(f"{name} ({level})")
+            elif name:
+                labels.append(name)
+        return labels
 
 
 class EducationItem(BaseModel):
@@ -432,6 +498,31 @@ class Profile(BaseModel):
     acceptance_context: Optional[dict] = None  # PAC from Milo (free-form dict, round-trips)
     milo_readme_path: Optional[str] = None
 
+    @field_validator("languages", mode="before")
+    @classmethod
+    def coerce_language_items(cls, value: object) -> list:
+        """Accept chip strings or {name, proficiency} when switching people.
+
+        # Ref: GET /api/candidates/{id} — named vs master JSON
+        """
+        if not isinstance(value, list):
+            return []
+        rows: list = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if not text:
+                    continue
+                if text.endswith(")") and "(" in text:
+                    name, rest = text.rsplit("(", 1)
+                    rows.append({"name": name.strip(), "proficiency": rest[:-1].strip()})
+                else:
+                    rows.append({"name": text, "proficiency": None})
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+        return rows
+
     @model_validator(mode="after")
     def sync_language_labels(self) -> "Profile":
         """Keep basics.languages as display strings for Leo / Typst.
@@ -461,7 +552,7 @@ class CreateProfileRequest(BaseModel):
 class LinkedInImportRequest(BaseModel):
     """Body for POST /api/candidates/import-linkedin.
 
-    # Ref: public /in/{slug} only — user-supplied username or URL
+    # Ref: LinkedIn 2026 /in/{slug}, /in/?profileId=, ACoAA member id, lnkd.in
     """
     username: str
     candidate_id: Optional[str] = None
@@ -477,6 +568,39 @@ class JobStatusUpdate(BaseModel):
     def _at_least_one_flag(self) -> "JobStatusUpdate":
         if self.expired is None and self.unconsiderable is None:
             raise ValueError("Provide expired and/or unconsiderable")
+        return self
+
+
+ApplicationFollowStatus = Literal[
+    "READY",
+    "APPLIED",
+    "AWAITING",
+    "EMPLOYER_UPDATE",
+    "INTERVIEW",
+    "OFFER",
+    "REJECTED",
+    "WITHDRAWN",
+]
+
+
+class ApplicationFollowUpUpdate(BaseModel):
+    """Body for PATCH /api/jobs/{id}/follow-up — Clara post-application tracking.
+
+    # Ref: src/validators/application_followup.py
+    """
+
+    application_status: Optional[ApplicationFollowStatus] = None
+    application_note: Optional[str] = None
+    employer_update_note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "ApplicationFollowUpUpdate":
+        if (
+            self.application_status is None
+            and self.application_note is None
+            and self.employer_update_note is None
+        ):
+            raise ValueError("Provide application_status, application_note, or employer_update_note")
         return self
 
 

@@ -186,7 +186,7 @@ def matching_job_where(terms: Sequence[str]) -> tuple[str, list[str]]:
             "("
             "LOWER(COALESCE(job_title, '')) LIKE ? OR "
             "LOWER(COALESCE(target_industry, '')) LIKE ? OR "
-            "LOWER(COALESCE(jd_snippet, '')) LIKE ? OR "
+            "LOWER(COALESCE(jd_full, jd_snippet, '')) LIKE ? OR "
             "LOWER(COALESCE(company_name, '')) LIKE ?"
             ")"
         )

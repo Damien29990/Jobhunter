@@ -6,7 +6,29 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import unquote, urlparse, urlunparse
+from difflib import SequenceMatcher
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
+
+JD_FULL_MAX = 200_000
+
+
+def clip_listing_text(text: str, limit: int = JD_FULL_MAX) -> str:
+    """Cap stored full JD length.
+
+    # Ref: job_postings.jd_full
+    """
+    raw = text or ""
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit]
+
+
+def listing_full_text(job: dict) -> str:
+    """Prefer jd_full, then the short snippet.
+
+    # Ref: job_postings.jd_full vs jd_snippet
+    """
+    return str(job.get("jd_full") or job.get("jd_snippet") or "").strip()
 
 _ACADEMIC_PATH_RE = re.compile(
     r"phd|mphil|dphil|research[-_ ]?postgraduate|taught[-_ ]?postgraduate|"
@@ -52,7 +74,11 @@ _GREENHOUSE_POSTING_RE = re.compile(r"/jobs/\d{5,}")
 _LEVER_POSTING_RE = re.compile(
     r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
 )
-_LINKEDIN_POSTING_RE = re.compile(r"/jobs/view/.+\d{6,}")
+_LINKEDIN_POSTING_RE = re.compile(r"/jobs/view/.+\d{6,}|/jobs/view/\d{6,}", re.I)
+_LINKEDIN_JOB_ID_RE = re.compile(
+    r"(?:[?&]currentJobId=|/jobs/view/(?:[^/?#]*-)?)(\d{6,})",
+    re.I,
+)
 _WORKDAY_REQ_RE = re.compile(r"/reqId/\d{4,}|/job/\d{5,}|req=\d{4,}")
 _SMARTRECRUITERS_RE = re.compile(r"/[A-Za-z0-9_-]+/\d{6,}")
 _AMAZON_JOBS_RE = re.compile(r"/jobs/\d{5,}")
@@ -67,6 +93,25 @@ _EMPLOYER_POSTING_RE = re.compile(
     re.I,
 )
 _SEARCH_QUERY_RE = re.compile(r"(?:^|[?&])(q|query|keyword|keywords|search)=", re.I)
+_TRACKING_QUERY_KEYS = frozenset(
+    {
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+        "fbclid", "gclid", "mc_cid", "mc_eid", "type",
+    }
+)
+_POSTED_ON_TEXT = re.compile(
+    r"(?:posted(?:\s+on)?|date\s*posted|publish(?:ed)?(?:\s+on)?|發布日期|刊登日期|張貼日期)"
+    r"\s*[:：]?\s*"
+    r"(\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\s+\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})",
+    re.I,
+)
+_POSTED_AGO_TEXT = re.compile(
+    r"posted\s+(\d+)\s*(d|day|days|h|hr|hrs|hour|hours)\s+ago",
+    re.I,
+)
+_JSON_DATE_POSTED = re.compile(r'"datePosted"\s*:\s*"([^"]+)"', re.I)
 
 
 def extract_host(url: str) -> str:
@@ -88,11 +133,36 @@ def is_phenom_job_url(url: str) -> bool:
     return bool(_PHENOM_JOB_RE.search(path))
 
 
+def linkedin_job_id(url: str) -> str:
+    """Numeric LinkedIn job id from /jobs/view/… or currentJobId= (2024–2026 share links).
+
+    # Ref: linkedin.com/jobs/view/{slug}-{id} and ?currentJobId=
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    query_id = ""
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() == "currentjobid" and re.fullmatch(r"\d{6,}", value or ""):
+            query_id = value
+            break
+    if query_id:
+        return query_id
+    path = parsed.path or ""
+    match = re.search(r"/jobs/view/(?:[^/]*-)?(\d{6,})/?$", path, re.I)
+    if match:
+        return match.group(1)
+    match = re.search(r"/jobs/view/(\d{6,})", path, re.I)
+    return match.group(1) if match else ""
+
+
 def normalize_listing_url(url: str) -> str:
-    """Make a stored posting URL openable in a browser.
+    """Make a stored posting URL openable and unique across query/slug variants.
 
     HKJC Phenom pages 400 without a locale prefix. Decode once so %2C is not
-    double-encoded.
+    double-encoded. JobsDB / HKSTP keep /job/{id} so slug and tracking params
+    do not create duplicate rows.
     # Ref: careers.hkjc.com nginx 400 on malformed job path
     """
     raw = (url or "").strip()
@@ -104,16 +174,122 @@ def normalize_listing_url(url: str) -> str:
     decoded = unquote(path)
     if is_phenom_job_url(raw) and "hkjc.com" in host and not _PHENOM_LOCALE_RE.search(decoded):
         path = re.sub(r"/job/", "/en_US/job/", path, count=1)
+    jobsdb_id = re.search(r"/job/(\d{5,})", path, re.I)
+    if "jobsdb.com" in host and jobsdb_id:
+        path = f"/job/{jobsdb_id.group(1)}"
+    hkstp_id = _HKSTP_POSTING_RE.search(path)
+    if "talentjobseeker.hkstp.org" in host and hkstp_id:
+        path = f"/job/{hkstp_id.group(1)}"
+    ct_id = re.search(r"/job/(\d{4,})", path, re.I)
+    if "ctgoodjobs.hk" in host and ct_id:
+        path = f"/job/{ct_id.group(1)}"
+    li_job = linkedin_job_id(raw)
+    if "linkedin.com" in host and li_job:
+        path = f"/jobs/view/{li_job}"
+        netloc = "www.linkedin.com"
+        return urlunparse(("https", netloc, path, "", "", ""))
+    path = re.sub(r"/{2,}", "/", path)
+    if len(path) > 1:
+        path = path.rstrip("/")
+    kept_query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in _TRACKING_QUERY_KEYS
+    ]
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    scheme = (parsed.scheme or "https").lower()
     return urlunparse(
         (
-            parsed.scheme or "https",
-            parsed.netloc,
+            scheme,
+            netloc,
             path,
             parsed.params,
-            parsed.query,
-            parsed.fragment,
+            urlencode(kept_query),
+            "",
         )
     )
+
+
+def parse_posted_at(*texts: str) -> str:
+    """ISO Asia/Hong_Kong stamp from Tavily published_date or JD 'Posted on' text.
+
+    # Ref: job_postings.posted_at — board publish time, not Rex created_at
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    hk = ZoneInfo("Asia/Hong_Kong")
+    for text in texts:
+        raw = str(text or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=hk)
+            return parsed.astimezone(hk).isoformat()
+        except ValueError:
+            pass
+        blob = raw.replace("\n", " ")
+        json_match = _JSON_DATE_POSTED.search(blob)
+        if json_match:
+            nested = parse_posted_at(json_match.group(1))
+            if nested:
+                return nested
+        match = _POSTED_ON_TEXT.search(blob)
+        if match:
+            stamp = match.group(1).replace("/", "-")
+            for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    parsed = datetime.strptime(stamp, fmt).replace(tzinfo=hk)
+                    return parsed.isoformat()
+                except ValueError:
+                    continue
+        ago = _POSTED_AGO_TEXT.search(blob)
+        if ago:
+            amount = int(ago.group(1))
+            unit = ago.group(2).lower()
+            now = datetime.now(hk)
+            if unit.startswith("h"):
+                parsed = now - timedelta(hours=amount)
+            else:
+                parsed = now - timedelta(days=amount)
+            return parsed.replace(microsecond=0).isoformat()
+    return ""
+
+
+def folded_listing_title(job_title: str) -> str:
+    """Lowercase title with punctuation stripped for duplicate matching."""
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", (job_title or "").lower()).strip()
+
+
+def listing_duplicate_key(company_name: str, job_title: str) -> tuple[str, str] | None:
+    """Stable employer+title key used to collapse the same vacancy on two boards.
+
+    # Ref: HKPC Researcher listed on JobsDB and a second careers URL
+    """
+    company = (company_name or "").strip().lower()
+    title = folded_listing_title(job_title)
+    if len(title) < 8:
+        return None
+    if company in {"", "undisclosed employer", "not disclosed"}:
+        return None
+    return (company, title)
+
+
+def listing_titles_same_vacancy(left: str, right: str) -> bool:
+    """True when two titles are the same role, allowing a one-letter board typo."""
+    folded_left = folded_listing_title(left)
+    folded_right = folded_listing_title(right)
+    if not folded_left or not folded_right:
+        return False
+    if folded_left == folded_right:
+        return True
+    if min(len(folded_left), len(folded_right)) < 12:
+        return False
+    return SequenceMatcher(None, folded_left, folded_right).ratio() >= 0.92
 
 
 def is_academic_non_job_url(url: str) -> bool:
@@ -243,6 +419,8 @@ def listing_url_problem(url: str) -> str | None:
 
     if is_academic_non_job_url(url):
         return "academic or programme page"
+    if linkedin_job_id(url):
+        return None
     if _SEARCH_QUERY_RE.search(query) or path.endswith("/search") or "/search/" in path + "/":
         if "jobdetail" not in path and "job-detail" not in path and "/job/" not in path:
             return "search results page, not a posting"
@@ -264,7 +442,7 @@ def listing_url_problem(url: str) -> str | None:
     if "lever.co" in host:
         return None if _LEVER_POSTING_RE.search(path) else "Lever board index"
     if "linkedin.com" in host:
-        return None if _LINKEDIN_POSTING_RE.search(path) else "LinkedIn is not a /jobs/view posting"
+        return None if linkedin_job_id(url) else "LinkedIn is not a /jobs/view posting"
     if "myworkdayjobs.com" in host or "workday" in host:
         return None if _WORKDAY_REQ_RE.search(path) else "Workday non-requisition URL"
     if "smartrecruiters.com" in host:

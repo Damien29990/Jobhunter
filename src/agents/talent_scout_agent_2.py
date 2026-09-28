@@ -18,10 +18,12 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from listing_filters import (  # noqa: E402
+    clip_listing_text,
     display_listing_title,
     is_junk_job_title,
     listing_url_problem,
     normalize_listing_url,
+    parse_posted_at,
     title_from_job_url,
 )
 from talent_scout_agent import (  # noqa: E402
@@ -611,12 +613,14 @@ class TalentScoutAgent(BaseTalentScoutAgent):
         content: str,
         source_lane: str,
         company_name: str,
+        published_date: str = "",
     ) -> Optional[int]:
         """Persist a searched posting before any DeepSeek score.
 
         # Ref: every Tavily/JobsDB hit with a real /job URL is stored
         """
         snippet = re.sub(r"\s+", " ", content or "").strip()[:4000]
+        full = clip_listing_text(content or "")
         stored_title = prefer_listing_title(title, url, title_from_job_url(url) or title)
         if is_junk_job_title(stored_title):
             stored_title = title_from_job_url(url) or stored_title or "Untitled role"
@@ -641,12 +645,14 @@ class TalentScoutAgent(BaseTalentScoutAgent):
             "is_direct_hire": False,
             "recommendation_reason": PENDING_EVAL_REASON,
             "jd_snippet": snippet or (title or "")[:500],
+            "jd_full": full or snippet or (title or "")[:500],
             "created_at": now_hk_iso(),
             "target_industry": "",
             "hard_skill_match_score": None,
             "transferability_score": None,
             "transferable_strengths": [],
             "career_advisory_note": "",
+            "posted_at": parse_posted_at(published_date, content) or None,
         }
         embedding = self.get_embedding(f"{employer} {stored_title} {snippet[:400]}")
         try:
@@ -665,6 +671,7 @@ class TalentScoutAgent(BaseTalentScoutAgent):
                 company_name=employer,
                 job_title=stored_title,
                 jd_snippet=snippet or (title or "")[:500],
+                jd_full=full or snippet or (title or "")[:500],
             )
         log_activity("Rex", f"Stored JD #{job_id} before score: {employer} — {stored_title}")
         return job_id
@@ -979,11 +986,13 @@ Anonymized profile:
             "is_direct_hire": eval_res.is_direct_hire,
             "recommendation_reason": eval_res.recommendation_reason,
             "jd_snippet": snippet,
+            "jd_full": clip_listing_text(content),
             "target_industry": eval_res.target_industry,
             "hard_skill_match_score": eval_res.hard_skill_match_score,
             "transferability_score": eval_res.transferability_score,
             "transferable_strengths": eval_res.transferable_strengths,
             "career_advisory_note": eval_res.career_advisory_note,
+            "posted_at": parse_posted_at(content),
         }
         try:
             self.db_manager.update_job_evaluation(draft_id, job_record)
@@ -1128,7 +1137,7 @@ Anonymized profile:
                 log_activity("Rex", f"Track {track.track_id} search failed: {exc}", level="ERROR")
                 continue
             for raw in raw_jobs:
-                url = raw.get("url")
+                url = normalize_listing_url(raw.get("url") or "") or raw.get("url")
                 if not url or url in seen_urls:
                     continue
                 if is_academic_non_job_url(url) or is_academic_programme_title(raw.get("title") or ""):
@@ -1148,6 +1157,7 @@ Anonymized profile:
                         content=content,
                         source_lane=raw.get("source_lane") or "unknown",
                         company_name="",
+                        published_date=raw.get("published_date") or "",
                     )
                     if job_id is None:
                         continue
@@ -1182,6 +1192,9 @@ Anonymized profile:
                             int(state["id"]),
                             f"system_one_skip: {decision.reason}",
                         )
+                    stamp = parse_posted_at(raw.get("published_date") or "", content)
+                    if stamp:
+                        self.db_manager.fill_posted_at(int(state["id"]), stamp)
                     continue
 
                 try:
@@ -1281,11 +1294,16 @@ Anonymized profile:
                         "is_direct_hire": eval_res.is_direct_hire,
                         "recommendation_reason": eval_res.recommendation_reason,
                         "jd_snippet": snippet,
+                        "jd_full": clip_listing_text(content),
                         "target_industry": eval_res.target_industry,
                         "hard_skill_match_score": eval_res.hard_skill_match_score,
                         "transferability_score": eval_res.transferability_score,
                         "transferable_strengths": eval_res.transferable_strengths,
                         "career_advisory_note": eval_res.career_advisory_note,
+                        "posted_at": parse_posted_at(
+                            raw.get("published_date") or "",
+                            content,
+                        ),
                     }
                     self.db_manager.update_job_evaluation(int(state["id"]), job_record)
                     job_id = int(state["id"])

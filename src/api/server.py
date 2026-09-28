@@ -47,14 +47,38 @@ from activity_logger import log_system  # noqa: E402
 from .models import (  # noqa: E402
     AgentRunRequest, AgentStatus, AgentStatusMap, CandidateProfile,
     CompanyDossierOut, CreateProfileRequest, DossierPayload, FunnelStats,
-    HealthOut, JobCheckResult, JobListResponse, JobOut, JobShelfResponse,
-    JobStatusUpdate, LinkedInImportRequest, Profile, TelegramBotOut,
+    ApplicationFollowUpUpdate, HealthOut, JobCheckResult, JobListResponse,
+    JobOut, JobShelfResponse, JobStatusUpdate, LinkedInImportRequest,
+    LinkedInMcpStatusOut, Profile, TelegramBotOut,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DB_PATH = PROJECT_ROOT / "job_agent.db"
 PROFILES_DIR = PROJECT_ROOT / "config" / "profiles"
 DEFAULT_PROFILE = PROJECT_ROOT / "config" / "master_profile.json"
+
+
+def _person_tag_for(candidate_id: Optional[str]) -> str:
+    """people.tag for Telegram; never default/master.
+
+    # Ref: people.tag
+    """
+    from people_store import resolve_person
+
+    try:
+        conn = _connect()
+        try:
+            person = resolve_person(conn, candidate_id or "default")
+        finally:
+            conn.close()
+    except Exception:
+        person = None
+    if person and str(person.tag).lower() not in {"default", "master"}:
+        return person.tag
+    text = str(candidate_id or "").strip()
+    if text.lower() in {"", "default", "master"}:
+        return ""
+    return text
 
 
 def _connect() -> sqlite3.Connection:
@@ -250,11 +274,40 @@ def _ensure_expired_column() -> None:
             conn.execute("ALTER TABLE job_postings ADD COLUMN cover_letter_pdf_path TEXT")
         if "cover_letter_typ_path" not in cols:
             conn.execute("ALTER TABLE job_postings ADD COLUMN cover_letter_typ_path TEXT")
+        if "posted_at" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN posted_at TEXT")
+        if "jd_full" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN jd_full TEXT")
+            conn.execute(
+                "UPDATE job_postings SET jd_full = jd_snippet "
+                "WHERE jd_full IS NULL OR TRIM(COALESCE(jd_full, '')) = ''"
+            )
+        if "application_status" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN application_status TEXT")
+        if "application_note" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN application_note TEXT")
+        if "employer_update_note" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN employer_update_note TEXT")
+        if "application_status_at" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN application_status_at TEXT")
+        if "employer_update_at" not in cols:
+            conn.execute("ALTER TABLE job_postings ADD COLUMN employer_update_at TEXT")
+        conn.execute(
+            "UPDATE job_postings SET application_status = 'READY' "
+            "WHERE COALESCE(application_ready, 0) = 1 "
+            "AND (application_status IS NULL OR TRIM(application_status) = '')"
+        )
+        from people_store import ensure_schema, sync_people_from_config
+
+        ensure_schema(conn)
+        sync_people_from_config(conn, PROJECT_ROOT)
         conn.commit()
     except Exception:
         pass
     try:
         _rewrite_phenom_job_urls(conn)
+        _collapse_duplicate_jobs(conn)
+        _backfill_posted_at(conn)
         conn.commit()
     except Exception:
         pass
@@ -284,7 +337,89 @@ def _rewrite_phenom_job_urls(conn: sqlite3.Connection) -> None:
                 (new_url or url, new_title or title, job_id),
             )
         except sqlite3.IntegrityError:
+            other = conn.execute(
+                "SELECT id FROM job_postings WHERE job_url = ?",
+                (new_url,),
+            ).fetchone()
+            if other is not None and int(other[0]) != int(job_id):
+                conn.execute(
+                    "UPDATE job_postings SET expired = 1 WHERE id = ?",
+                    (int(job_id),),
+                )
+
+
+def _collapse_duplicate_jobs(conn: sqlite3.Connection) -> None:
+    """Expire extra cards for the same employer + title (HKPC dual listings)."""
+    try:
+        from listing_filters import listing_duplicate_key, listing_titles_same_vacancy
+    except Exception:
+        return
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, company_name, job_title, match_score, cv_status
+            FROM job_postings
+            WHERE COALESCE(expired, 0) = 0
+            """
+        ).fetchall()
+    except Exception:
+        return
+    groups: dict[str, list[tuple[int, int, str, str]]] = {}
+    for row in rows:
+        job_id, company, title, score, cv_status = row[0], row[1], row[2], row[3], row[4]
+        if listing_duplicate_key(company or "", title or "") is None:
             continue
+        company_key = (company or "").strip().lower()
+        groups.setdefault(company_key, []).append(
+            (int(job_id), int(score or 0), str(title or ""), str(cv_status or ""))
+        )
+    for items in groups.values():
+        clusters: list[list[tuple[int, int, str, str]]] = []
+        for item in items:
+            placed = False
+            for cluster in clusters:
+                if listing_titles_same_vacancy(item[2], cluster[0][2]):
+                    cluster.append(item)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([item])
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            cluster.sort(
+                key=lambda row: (1 if row[3] else 0, row[1], -row[0]),
+                reverse=True,
+            )
+            for job_id, _score, _title, _cv in cluster[1:]:
+                conn.execute(
+                    "UPDATE job_postings SET expired = 1 WHERE id = ?",
+                    (job_id,),
+                )
+
+
+def _backfill_posted_at(conn: sqlite3.Connection) -> None:
+    try:
+        from listing_filters import parse_posted_at
+    except Exception:
+        return
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, COALESCE(jd_full, jd_snippet)
+            FROM job_postings
+            WHERE posted_at IS NULL OR TRIM(COALESCE(posted_at, '')) = ''
+            """
+        ).fetchall()
+    except Exception:
+        return
+    for job_id, snippet in rows:
+        stamp = parse_posted_at(snippet or "")
+        if stamp:
+            conn.execute(
+                "UPDATE job_postings SET posted_at = ? WHERE id = ?",
+                (stamp, int(job_id)),
+            )
 
 
 def _active_job_clause(alias: str = "") -> tuple[str, list]:
@@ -356,7 +491,18 @@ def telegram_bot() -> TelegramBotOut:
     """
     from .telegram_notifier import get_bot_info
     info = get_bot_info()
-    return TelegramBotOut.model_validate(info)
+    return TelegramBotOut(**info)
+
+
+@app.get("/api/linkedin/mcp-status", response_model=LinkedInMcpStatusOut)
+def linkedin_mcp_status_endpoint() -> LinkedInMcpStatusOut:
+    """Where LinkedIn MCP is connected and how Jobhunter uses it.
+
+    # Ref: linkedin_mcp_client — not Cursor
+    """
+    from linkedin_mcp_client import linkedin_mcp_status
+
+    return LinkedInMcpStatusOut(**linkedin_mcp_status())
 
 
 def _profile_name(p: Path) -> str:
@@ -382,17 +528,41 @@ def _profile_roles(p: Path) -> list[str]:
 @app.get("/api/candidates", response_model=list[CandidateProfile])
 def candidates() -> list[CandidateProfile]:
     out: list[CandidateProfile] = []
+    if DB_PATH.is_file():
+        try:
+            from people_store import absolute_profile_path, list_people
+
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            try:
+                people = list_people(conn)
+            finally:
+                conn.close()
+            for person in people:
+                path = absolute_profile_path(person.profile_path, PROJECT_ROOT)
+                out.append(CandidateProfile(
+                    id=person.tag,
+                    person_id=person.id,
+                    name=person.full_name or _profile_name(path),
+                    profile_path=str(path),
+                    target_roles=_profile_roles(path),
+                    is_default=person.is_master,
+                    is_master=person.is_master,
+                ))
+        except Exception:
+            out = []
+    if out:
+        return out
     if PROFILES_DIR.is_dir():
         for p in sorted(PROFILES_DIR.glob("*.json")):
             out.append(CandidateProfile(
                 id=p.stem, name=_profile_name(p), profile_path=str(p),
-                target_roles=_profile_roles(p), is_default=False,
+                target_roles=_profile_roles(p), is_default=False, is_master=False,
             ))
     if DEFAULT_PROFILE.is_file():
         out.append(CandidateProfile(
             id="default", name=_profile_name(DEFAULT_PROFILE),
             profile_path=str(DEFAULT_PROFILE), target_roles=_profile_roles(DEFAULT_PROFILE),
-            is_default=True,
+            is_default=True, is_master=True,
         ))
     seen: set[str] = set()
     deduped: list[CandidateProfile] = []
@@ -415,12 +585,30 @@ _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 def _profile_path_for(id: str) -> Path:
     """Resolve a candidate id to its JSON file, safely.
 
-    'default' -> config/master_profile.json
-    else      -> config/profiles/{id}.json
-    Rejects path traversal and invalid ids.
+    ``default`` means the current people.is_master row (identity can change).
+    Named tags and integer person_id look up people.profile_path.
+    File fallback: config/master_profile.json or config/profiles/{id}.json
     """
     if not id or not _PROFILE_ID_RE.match(id):
         raise HTTPException(400, f"invalid profile id: {id!r}")
+    if DB_PATH.is_file():
+        try:
+            from people_store import resolve_profile_path_for_ref
+
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            try:
+                found = resolve_profile_path_for_ref(conn, id, PROJECT_ROOT)
+            finally:
+                conn.close()
+            if found is not None:
+                path = found
+                resolved = path.resolve()
+                resolved.relative_to(PROJECT_ROOT / "config")
+                return resolved
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     if id == "default":
         path = DEFAULT_PROFILE
     else:
@@ -470,7 +658,7 @@ def create_candidate(req: CreateProfileRequest) -> Profile:
         from contact_links import is_valid_linkedin_username, linkedin_handle
 
         if not is_valid_linkedin_username(req.linkedin):
-            raise HTTPException(400, "invalid LinkedIn username or /in/ URL")
+            raise HTTPException(400, "invalid LinkedIn username, /in/ URL, ?profileId= share link, or lnkd.in")
         linkedin_value = linkedin_handle(req.linkedin)
     profile = Profile(
         basics={"name": req.name, "location": req.location or "Hong Kong",
@@ -482,10 +670,33 @@ def create_candidate(req: CreateProfileRequest) -> Profile:
     data = profile.model_dump(mode="json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from people_store import (
+            ensure_schema,
+            relative_profile_path,
+            tag_for_profile_file,
+            upsert_person,
+        )
+
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        ensure_schema(conn)
+        tag = (
+            req.id
+            if req.id.lower() not in {"default", "master"}
+            else tag_for_profile_file(path, req.name)
+        )
+        upsert_person(
+            conn,
+            tag=tag,
+            full_name=req.name,
+            profile_path=relative_profile_path(path, PROJECT_ROOT),
+            is_master=False,
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
     return profile
-
-
-def _merge_parsed_profile(profile_path: Path, parsed: dict, *, fill_empty: bool = False) -> dict:
     """Merge CV or LinkedIn parse output into the candidate JSON on disk.
 
     fill_empty=True (LinkedIn bootstrap) only fills blank fields so a later
@@ -579,9 +790,9 @@ async def import_cv_endpoint(request: Request, candidate_id: Optional[str] = Que
 
 @app.post("/api/candidates/import-linkedin")
 def import_linkedin_endpoint(req: LinkedInImportRequest) -> dict:
-    """Seed a basic profile from a LinkedIn vanity username, then Milo CV can enrich it.
+    """Seed a profile via Jobhunter-spawned LinkedIn MCP, then Milo CV can enrich it.
 
-    # Ref: linkedin_bootstrap.bootstrap_from_linkedin — Tavily public text, no login
+    # Ref: linkedin_mcp_client — agent stdio MCP, not Cursor
     """
     from linkedin_bootstrap import bootstrap_from_linkedin
     from talent_scout_agent import now_hk_iso
@@ -592,7 +803,21 @@ def import_linkedin_endpoint(req: LinkedInImportRequest) -> dict:
         raise HTTPException(400, str(exc)) from exc
     cid = req.candidate_id or "default"
     profile_path = _profile_path_for(cid)
-    existing = _merge_parsed_profile(profile_path, boot.parsed, fill_empty=True)
+    if profile_path.is_file():
+        existing = json.loads(profile_path.read_text(encoding="utf-8"))
+    else:
+        existing = {}
+    if boot.source == "mcp":
+        from linkedin_bootstrap import merge_linkedin_mcp
+        from linkedin_mcp_client import write_linkedin_mcp_cache
+
+        existing = merge_linkedin_mcp(existing, boot.parsed)
+        cache_path = write_linkedin_mcp_cache(cid, boot.mcp_payload or boot.parsed, boot.parsed)
+    else:
+        from linkedin_bootstrap import merge_fill_empty
+
+        existing = merge_fill_empty(existing, boot.parsed)
+        cache_path = None
     imports = list(existing.get("linkedin_imports") or [])
     imports.append({
         "handle": boot.handle,
@@ -600,8 +825,21 @@ def import_linkedin_endpoint(req: LinkedInImportRequest) -> dict:
         "source": boot.source,
         "public_text_chars": boot.public_text_chars,
         "imported_at": now_hk_iso(),
+        "profile_path": str(profile_path),
+        "mcp_cache_path": str(cache_path) if cache_path else "",
+        "experience_n": len(existing.get("experience") or []),
+        "education_n": len(existing.get("education") or []),
     })
     existing["linkedin_imports"] = imports[-20:]
+    if cache_path is not None:
+        existing["linkedin_mcp"] = {
+            "handle": boot.handle,
+            "url": boot.url,
+            "fetched_at": now_hk_iso(),
+            "profile_path": str(profile_path),
+            "cache_path": str(cache_path),
+        }
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     from milo_intake import MiloIntakeAgent
     agent = MiloIntakeAgent(profile_path=profile_path)
@@ -609,7 +847,15 @@ def import_linkedin_endpoint(req: LinkedInImportRequest) -> dict:
     data = json.loads(profile_path.read_text(encoding="utf-8"))
     data["linkedin_source"] = boot.source
     data["linkedin_url"] = boot.url
+    data["linkedin_profile_path"] = str(profile_path)
+    data["linkedin_mcp_cache_path"] = str(cache_path) if cache_path else ""
     log_system(f"LinkedIn bootstrap {boot.source} for {cid}: {boot.handle}")
+    try:
+        from .telegram_notifier import send_linkedin_mcp_status
+
+        send_linkedin_mcp_status(person_tag=_person_tag_for(cid))
+    except Exception:
+        pass
     return data
 
 
@@ -703,23 +949,44 @@ def milo_summary_endpoint(candidate_id: str):
     live = live_chat_messages(agent.chat_history)
     readme_path = milo_readme_path_for(profile_path)
     return {
+        "candidate_id": candidate_id,
         "executive_narrative": agent.milo_summary or (agent.profile.get("acceptance_context") or {}).get("executive_narrative", ""),
         "chat_count": len(live),
         "readme_path": str(readme_path),
         "readme": load_milo_readme(profile_path),
+        "profile_path": str(profile_path),
     }
 
 
 @app.get("/api/milo/history/{candidate_id}")
 def milo_history_endpoint(candidate_id: str):
-    """Get full chat history for a candidate."""
+    """Get full chat history for a candidate (people.id, not default/master)."""
     conn = _connect()
     try:
+        from people_store import resolve_person
+
+        person = None
+        try:
+            person = resolve_person(conn, candidate_id)
+        except Exception:
+            person = None
+        if person is not None:
+            rows = conn.execute(
+                "SELECT role, content, created_at FROM milo_chat_history "
+                "WHERE person_id = ? ORDER BY id",
+                (person.id,),
+            ).fetchall()
+            return {
+                "messages": [dict(r) for r in rows],
+                "count": len(rows),
+                "candidate_id": person.tag,
+                "person_id": person.id,
+            }
         rows = conn.execute(
             "SELECT role, content, created_at FROM milo_chat_history WHERE candidate_id = ? ORDER BY id",
             (candidate_id,),
         ).fetchall()
-        return {"messages": [dict(r) for r in rows], "count": len(rows)}
+        return {"messages": [dict(r) for r in rows], "count": len(rows), "candidate_id": candidate_id}
     finally:
         conn.close()
 
@@ -895,6 +1162,31 @@ def jobs_shelf(limit: int = Query(200, ge=1, le=500)) -> JobShelfResponse:
         conn.close()
 
 
+@app.get("/api/jobs/follow-up", response_model=list[JobOut])
+def list_follow_up_jobs() -> list[JobOut]:
+    """Jobs Clara already packed that the user still needs to chase.
+
+    # Ref: application_followup.OPEN_FOLLOW_UP
+    """
+    from application_followup import follow_up_needed
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM job_postings WHERE COALESCE(application_ready, 0) = 1 "
+            "ORDER BY COALESCE(employer_update_at, application_status_at, created_at) DESC"
+        ).fetchall()
+        lookup = _dossier_lookup(conn)
+        out: list[JobOut] = []
+        for row in rows:
+            job = _attach_dossier(_row_to_job(row), lookup)
+            if follow_up_needed(job.application_status, job.application_ready):
+                out.append(job)
+        return out
+    finally:
+        conn.close()
+
+
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
 def get_job(job_id: int) -> JobOut:
     conn = _connect()
@@ -935,6 +1227,82 @@ def update_job_status(job_id: int, body: JobStatusUpdate) -> JobOut:
         return _attach_dossier(_row_to_job(row), lookup)
     finally:
         conn.close()
+
+
+@app.patch("/api/jobs/{job_id}/follow-up", response_model=JobOut)
+def update_job_follow_up(job_id: int, body: ApplicationFollowUpUpdate) -> JobOut:
+    """User marks application stage and employer updates for Clara follow-up.
+
+    # Ref: PATCH /api/jobs/{id}/follow-up
+    """
+    from application_followup import (
+        STATUS_EMPLOYER_UPDATE,
+        TERMINAL_STATUSES,
+        normalize_application_status,
+    )
+
+    now = datetime.now(timezone(timedelta(hours=8))).isoformat()
+    conn = _connect_rw()
+    try:
+        row = conn.execute("SELECT * FROM job_postings WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"job {job_id} not found")
+        current = dict(row)
+        next_status = current.get("application_status")
+        if body.application_status is not None:
+            next_status = normalize_application_status(body.application_status)
+        employer_note = body.employer_update_note
+        if employer_note is not None:
+            employer_note = employer_note.strip()
+            current_norm = normalize_application_status(str(next_status or ""))
+            if body.application_status is None and current_norm not in TERMINAL_STATUSES:
+                next_status = STATUS_EMPLOYER_UPDATE
+        sets: list[str] = []
+        params: list[object] = []
+        if body.application_status is not None or (
+            employer_note is not None and next_status != current.get("application_status")
+        ):
+            sets.append("application_status = ?")
+            params.append(next_status)
+            sets.append("application_status_at = ?")
+            params.append(now)
+        if body.application_note is not None:
+            sets.append("application_note = ?")
+            params.append(body.application_note.strip())
+        if employer_note is not None:
+            sets.append("employer_update_note = ?")
+            params.append(employer_note)
+            sets.append("employer_update_at = ?")
+            params.append(now)
+        if not sets:
+            raise HTTPException(400, "no fields to update")
+        params.append(job_id)
+        conn.execute(
+            f"UPDATE job_postings SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM job_postings WHERE id = ?", (job_id,)).fetchone()
+        lookup = _dossier_lookup(conn)
+        job = _attach_dossier(_row_to_job(row), lookup)
+    finally:
+        conn.close()
+    try:
+        from .telegram_notifier import send_job_update
+
+        extra_bits = [str(job.application_status or "")]
+        if job.employer_update_note:
+            extra_bits.append(job.employer_update_note[:200])
+        send_job_update(
+            "Clara",
+            "Application follow-up",
+            company=job.company_name or "",
+            title=job.job_title,
+            extra=" — ".join(part for part in extra_bits if part),
+        )
+    except Exception:
+        pass
+    return job
 
 
 @app.post("/api/jobs/{job_id}/check", response_model=JobCheckResult)
@@ -1165,6 +1533,144 @@ def get_job_checklist(job_id: int):
     if not path:
         raise HTTPException(404, "no application checklist generated for this job yet")
     return HTMLResponse(markdown_to_html(path.read_text(encoding="utf-8")))
+
+
+@app.post("/api/jobs/{job_id}/send-telegram")
+def send_job_to_telegram(
+    job_id: int,
+    candidate_id: Optional[str] = Query(None),
+):
+    """Send this job's documents (CV, checklist, dossier) to the Telegram bot.
+
+    # Ref: user requirement — send application docs to Telegram from job detail
+    """
+    from .telegram_notifier import send_job_documents
+    person_tag = _person_tag_for(candidate_id)
+
+    conn = _connect()
+    try:
+        job = conn.execute(
+            "SELECT j.company_name, j.job_title, j.cv_pdf_path, j.cv_typ_path, "
+            "j.cover_letter_pdf_path, j.cover_letter_typ_path, "
+            "j.application_checklist_path, d.markdown_path AS dossier_md "
+            "FROM job_postings j "
+            "LEFT JOIN company_dossiers d "
+            "  ON LOWER(TRIM(j.company_name)) = LOWER(TRIM(d.company_name)) "
+            "WHERE j.id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if job is None:
+        raise HTTPException(404, "job not found")
+
+    cv_path = str(_safe_path(job["cv_pdf_path"]) or _safe_path(job["cv_typ_path"]) or "")
+    letter_path = str(_safe_path(job["cover_letter_pdf_path"]) or _safe_path(job["cover_letter_typ_path"]) or "")
+    result = send_job_documents(
+        cv_pdf_path=cv_path,
+        cover_letter_path=letter_path,
+        checklist_path=str(_safe_path(job["application_checklist_path"]) or ""),
+        dossier_path=str(_safe_path(job["dossier_md"]) or ""),
+        company=job["company_name"] or "",
+        title=job["job_title"] or "",
+        person_tag=person_tag,
+    )
+    if not result["configured"]:
+        raise HTTPException(503, "Telegram bot not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+    return result
+
+
+@app.post("/api/jobs/{job_id}/send-telegram-info")
+def send_job_info_to_telegram(
+    job_id: int,
+    candidate_id: Optional[str] = Query(None),
+):
+    """Send a Telegram MESSAGE with this job's basic info + source link.
+
+    # Ref: user requirement — message with job basic information and source link
+    """
+    from .telegram_notifier import (
+        LAST_SEND_ERROR,
+        _escape_md,
+        _is_configured,
+        _send_raw,
+        _with_person,
+    )
+    person_tag = _person_tag_for(candidate_id)
+
+    conn = _connect()
+    try:
+        job = conn.execute(
+            "SELECT j.*, d.vetting_verdict, d.confidence AS dossier_confidence, "
+            "d.markdown_path AS dossier_md "
+            "FROM job_postings j "
+            "LEFT JOIN company_dossiers d "
+            "  ON LOWER(TRIM(j.company_name)) = LOWER(TRIM(d.company_name)) "
+            "WHERE j.id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if job is None:
+        raise HTTPException(404, "job not found")
+    if not _is_configured():
+        raise HTTPException(503, "Telegram bot not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+
+    # Build a rich formatted message with job basic info + source link
+    lines = [
+        f"📋 *Job Summary*",
+        f"*Company:* {_escape_md(job['company_name'] or 'N/A')}",
+        f"*Role:* {_escape_md(job['job_title'] or 'N/A')}",
+    ]
+    if job['target_industry']:
+        lines.append(f"*Industry:* {_escape_md(job['target_industry'])}")
+    if job['match_score'] is not None:
+        lines.append(f"*Composite Score:* {job['match_score']}/100")
+    if job['hard_skill_match_score'] is not None or job['transferability_score'] is not None:
+        lines.append(
+            f"*Scores:* hard={job['hard_skill_match_score'] or 0} "
+            f"transfer={job['transferability_score'] or 0}"
+        )
+    if job['location_mode']:
+        lines.append(f"*Location:* {_escape_md(job['location_mode'])}")
+    if job['salary_range']:
+        lines.append(f"*Salary:* {_escape_md(job['salary_range'])}")
+    if job['source_domain']:
+        lines.append(f"*Source:* {_escape_md(job['source_domain'])}")
+    if job['vetting_verdict']:
+        lines.append(f"*Vetting:* {_escape_md(job['vetting_verdict'])} (conf={job['dossier_confidence'] or '?'})")
+    if job['cv_status']:
+        lines.append(f"*CV:* {_escape_md(job['cv_status'])}")
+    if job['application_ready']:
+        lines.append("*Application:* Ready ✅")
+    if job['job_url']:
+        lines.append(f"\n🔗 {_escape_md(job['job_url'])}")
+
+    text = _with_person("\n".join(lines), person_tag)
+    msg_ok = _send_raw(text)
+
+    # Also send all available documents (CV, cover letter, checklist, dossier)
+    from .telegram_notifier import send_job_documents
+    # Prefer PDF over Typst source for each document type
+    cv_path = str(_safe_path(job["cv_pdf_path"]) or _safe_path(job["cv_typ_path"]) or "")
+    letter_path = str(_safe_path(job["cover_letter_pdf_path"]) or _safe_path(job["cover_letter_typ_path"]) or "")
+    doc_result = send_job_documents(
+        cv_pdf_path=cv_path,
+        cover_letter_path=letter_path,
+        checklist_path=str(_safe_path(job["application_checklist_path"]) or ""),
+        dossier_path=str(_safe_path(job["dossier_md"]) or ""),
+        company=job["company_name"] or "",
+        title=job["job_title"] or "",
+        person_tag=person_tag,
+    )
+
+    return {
+        "ok": msg_ok,
+        "configured": True,
+        "error": LAST_SEND_ERROR if not msg_ok else "",
+        "message_sent": msg_ok,
+        "documents": doc_result,
+    }
 
 
 @app.get("/api/dossiers", response_model=list[CompanyDossierOut])

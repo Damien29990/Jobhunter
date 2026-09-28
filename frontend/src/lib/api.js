@@ -110,6 +110,13 @@ export const api = {
       body: JSON.stringify({ unconsiderable }),
     }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
   jobsShelf: () => getJSON('/jobs/shelf'),
+  jobsFollowUp: () => getJSON('/jobs/follow-up'),
+  setJobFollowUp: (id, body) =>
+    fetch(`${BASE}/jobs/${id}/follow-up`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
   checkJob: (id) => postJSON(`/jobs/${id}/check`),
   jobDossier: (id) => getJSON(`/jobs/${id}/dossier`),
   jobCvUrl: (id, opts) => {
@@ -130,6 +137,15 @@ export const api = {
   },
   jobChecklistUrl: (id) => `${BASE}/jobs/${id}/checklist`,
   jobResearchUrl: (id) => `${BASE}/jobs/${id}/research`,
+  sendToTelegram: (id, candidateId) => {
+    const qs = candidateId ? `?candidate_id=${encodeURIComponent(candidateId)}` : ''
+    return postJSON(`/jobs/${id}/send-telegram${qs}`)
+  },
+  sendTelegramInfo: (id, candidateId) => {
+    const qs = candidateId ? `?candidate_id=${encodeURIComponent(candidateId)}` : ''
+    return postJSON(`/jobs/${id}/send-telegram-info${qs}`)
+  },
+  linkedinMcpStatus: () => getJSON('/linkedin/mcp-status'),
 
   dossiers: (verdict) => getJSON('/dossiers', verdict ? { verdict } : undefined),
   dossier: (name) => getJSON(`/dossiers/${encodeURIComponent(name)}`),

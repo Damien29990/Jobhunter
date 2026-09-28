@@ -193,6 +193,18 @@ def shelf_bucket(
     return None
 
 
+def is_kanban_visible(
+    match_score: int | None,
+    expired: bool | None,
+    user_status: str | None,
+) -> bool:
+    """True when the job is on the main board, not the hidden shelf.
+
+    # Ref: JobShelfPanel — skip listing sweep for hidden jobs
+    """
+    return shelf_bucket(match_score, expired, user_status) is None
+
+
 __all__ = [
     "PIVOT_TRANSFERABILITY_FLOOR",
     "COMPOSITE_HARD_SKILL_WEIGHT",
@@ -217,6 +229,7 @@ __all__ = [
     "is_unconsiderable",
     "kanban_column",
     "shelf_bucket",
+    "is_kanban_visible",
     "compute_composite_match_score",
     "passes_dual_score_gate",
     "passes_dana_composite_gate",

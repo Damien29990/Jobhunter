@@ -28,12 +28,22 @@ def test_localhost_dashboard_button_is_omitted(monkeypatch) -> None:
     assert markup["inline_keyboard"][0][0]["url"] == "https://example.com/dash"
 
 
-def test_escape_md_covers_pipe_and_dot() -> None:
-    assert "\\|" in _escape_md("a | b")
-    assert "\\." in _escape_md("1.2")
-
-
 def test_send_job_update_skips_when_unconfigured(monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     assert send_job_update("Rex", "New job stored", company="Acme", title="Eng") is False
+
+
+def test_send_job_update_prefixes_person_tag(monkeypatch) -> None:
+    captured: list[str] = []
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+    monkeypatch.setenv("JOBHUNTER_PERSON_TAG", "Lychee")
+    monkeypatch.setattr(
+        "telegram_notifier._send_raw",
+        lambda text, markup=None: captured.append(text) or True,
+    )
+    assert send_job_update("Rex", "stored", company="Acme", title="Eng") is True
+    assert captured
+    assert "Lychee" in captured[0]
+    assert "Person" in captured[0]

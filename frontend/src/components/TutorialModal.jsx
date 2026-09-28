@@ -103,7 +103,16 @@ function LinkedinField({ field, value, onChange, t, candidateId }) {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [err, setErr] = useState(null)
+  const [mcpStatus, setMcpStatus] = useState(null)
   const valid = isValidLinkedinUsername(value)
+
+  useEffect(() => {
+    let active = true
+    api.linkedinMcpStatus()
+      .then((data) => { if (active) setMcpStatus(data) })
+      .catch(() => { if (active) setMcpStatus(null) })
+    return () => { active = false }
+  }, [])
 
   async function importHandle() {
     if (!valid) return
@@ -126,7 +135,7 @@ function LinkedinField({ field, value, onChange, t, candidateId }) {
       <div className="flex gap-2">
         <input
           type="text"
-          placeholder="your-linkedin-slug"
+          placeholder="linkedin.com/in/… or ?profileId="
           value={value ?? ''}
           onChange={(e) => { onChange(e.target.value); setResult(null); setErr(null) }}
           className="flex-1 panel-inset px-2 py-1.5 font-mono text-[12px] text-slate-200 focus:outline-none focus:border-amber-retro"
@@ -147,11 +156,31 @@ function LinkedinField({ field, value, onChange, t, candidateId }) {
       )}
       {result && (
         <div className="mt-1 font-mono text-[12px] text-emerald-retro">
-          {result.linkedin_source === 'skeleton' ? t('milo.linkedinSkeleton') : t('milo.linkedinImported')}
+          {result.linkedin_source === 'skeleton'
+            ? t('milo.linkedinSkeleton')
+            : result.linkedin_source === 'parsed'
+              ? t('milo.linkedinParsed')
+              : t('milo.linkedinImported')}
+        </div>
+      )}
+      {result?.linkedin_profile_path && (
+        <div className="mt-1 font-mono text-[10px] text-slate-500 break-all">
+          {result.linkedin_profile_path}
+          {result.linkedin_mcp_cache_path ? ` · ${result.linkedin_mcp_cache_path}` : ''}
         </div>
       )}
       {err && <div className="mt-1 font-mono text-[12px] text-rose-retro">⚠️ {err}</div>}
-      <div className="mt-1 font-mono text-[10px] text-slate-600">{t('milo.linkedinHint')}</div>
+      <div className="mt-1 font-mono text-[10px] text-slate-600 leading-4 space-y-0.5">
+        <div>{t('milo.linkedinHint')}</div>
+        {mcpStatus && (
+          <>
+            <div>{t('milo.mcpWhere', { where: mcpStatus.connected_in })}</div>
+            <div>{t('milo.mcpHow', { how: mcpStatus.how })}</div>
+            <div>{t('milo.mcpSession', { session: mcpStatus.session })}</div>
+            <div>{t('milo.mcpFiles', { profile: mcpStatus.writes_profile, cache: mcpStatus.writes_cache })}</div>
+          </>
+        )}
+      </div>
     </label>
   )
 }

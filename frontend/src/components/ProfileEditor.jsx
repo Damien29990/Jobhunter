@@ -154,6 +154,8 @@ const EMPTY_PROFILE = {
     website: '',
     github: '',
     linkedin: '',
+    headline: '',
+    summary: '',
     target_roles: [],
     min_expected_salary_hkd: null,
     languages: [],
@@ -163,28 +165,54 @@ const EMPTY_PROFILE = {
 }
 
 function displayNameFromLinkedin(raw) {
-  const slug = String(raw || '').trim().replace(/^@/, '').split('/').filter(Boolean).pop() || ''
-  const parts = slug.split(/[-_]+/).filter((p) => p && !/^\d+$/.test(p))
-  if (!parts.length) return slug
+  const url = linkedinProfileUrl(raw)
+  let slug = ''
+  try {
+    const parsed = new URL(url)
+    slug = parsed.searchParams.get('profileId') || parsed.pathname.split('/').filter(Boolean).pop() || ''
+  } catch {
+    slug = String(raw || '').trim().replace(/^@/, '')
+  }
+  if (/^ACoAA/i.test(slug) || parsedIsShort(url)) return 'Your Name'
+  const parts = slug.split(/[-_]+/).filter((p) => p && !/^\d+$/.test(p) && p.toLowerCase() !== 'in')
+  if (!parts.length) return 'Your Name'
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
+}
+
+function parsedIsShort(url) {
+  return String(url || '').includes('lnkd.in')
 }
 
 function parseLanguageChip(raw) {
   const text = String(raw || '').trim()
+  if (!text || text === '[object Object]') return { name: '', proficiency: '' }
   const match = text.match(/^(.*?)\s*\((.+)\)\s*$/)
   if (match) return { name: match[1].trim(), proficiency: matchPresetValue(match[2].trim(), PROFICIENCY_PRESETS) }
   return { name: text, proficiency: '' }
 }
 
+function languageItemFrom(raw) {
+  if (raw && typeof raw === 'object') {
+    const name = String(raw.name || raw.language || '').trim()
+    if (!name || name === '[object Object]') return { name: '', proficiency: '' }
+    return {
+      name,
+      proficiency: matchPresetValue(String(raw.proficiency || raw.level || ''), PROFICIENCY_PRESETS),
+    }
+  }
+  return parseLanguageChip(raw)
+}
+
 function hydrateProfile(payload) {
-  const structured = Array.isArray(payload.languages)
-    && payload.languages.some((item) => item && typeof item === 'object' && item.name)
-  const languages = structured
-    ? payload.languages.map((item) => ({
-      name: item.name || '',
-      proficiency: matchPresetValue(item.proficiency || '', PROFICIENCY_PRESETS),
-    }))
-    : (payload.basics?.languages || []).map(parseLanguageChip)
+  const fromTop = Array.isArray(payload.languages) ? payload.languages : []
+  const fromBasics = Array.isArray(payload.basics?.languages) ? payload.basics.languages : []
+  const topHasRows = fromTop.some((item) => {
+    if (item && typeof item === 'object') return Boolean(item.name || item.language)
+    return typeof item === 'string' && item.trim() && item !== '[object Object]'
+  })
+  const languages = (topHasRows ? fromTop : fromBasics)
+    .map(languageItemFrom)
+    .filter((item) => item.name)
   const projects = (payload.projects || []).map((item) => ({
     name: item.name || '',
     role: matchPresetValue(item.role || '', PROJECT_ROLE_PRESETS),
@@ -219,7 +247,11 @@ function hydrateProfile(payload) {
     projects,
     experience,
     awards: payload.awards || [],
-    basics: { ...EMPTY_PROFILE.basics, ...(payload.basics || {}) },
+    basics: {
+      ...EMPTY_PROFILE.basics,
+      ...(payload.basics || {}),
+      languages: languageDisplayLabels(languages),
+    },
   }
 }
 
@@ -294,6 +326,22 @@ function UnsavedChangesDialog({ open, t, saving, onSave, onDiscard, onStay }) {
   )
 }
 
+function LinkedInMcpNote({ status, t }) {
+  return (
+    <div className="mt-1 font-mono text-[10px] text-slate-600 leading-4 space-y-0.5">
+      <div>{t('milo.linkedinHint')}</div>
+      {status && (
+        <>
+          <div>{t('milo.mcpWhere', { where: status.connected_in })}</div>
+          <div>{t('milo.mcpHow', { how: status.how })}</div>
+          <div>{t('milo.mcpSession', { session: status.session })}</div>
+          <div>{t('milo.mcpFiles', { profile: status.writes_profile, cache: status.writes_cache })}</div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function SectionHeader({ tabKey, t }) {
   const meta = TABS.find((item) => item.key === tabKey)
   if (!meta) return null
@@ -325,7 +373,16 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
   const [confirmClose, setConfirmClose] = useState(false)
   const [liBusy, setLiBusy] = useState(false)
   const [liMsg, setLiMsg] = useState(null)
+  const [mcpStatus, setMcpStatus] = useState(null)
   const snapshotRef = useRef(JSON.stringify(EMPTY_PROFILE))
+
+  useEffect(() => {
+    let active = true
+    api.linkedinMcpStatus()
+      .then((data) => { if (active) setMcpStatus(data) })
+      .catch(() => { if (active) setMcpStatus(null) })
+    return () => { active = false }
+  }, [])
 
   // load profile when entering edit mode
   useEffect(() => {
@@ -419,11 +476,24 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
       const cid = await ensureCreated()
       if (!cid) return
       const res = await api.importLinkedin(cid, raw)
-      const { linkedin_source: source, linkedin_url: _url, ...rest } = res
+      const {
+        linkedin_source: source,
+        linkedin_url: _url,
+        linkedin_profile_path: profilePath,
+        linkedin_mcp_cache_path: cachePath,
+        ...rest
+      } = res
       const next = hydrateProfile(rest)
       setProfile(next)
       snapshotRef.current = JSON.stringify(next)
-      setLiMsg(source === 'skeleton' ? t('milo.linkedinSkeleton') : t('milo.linkedinImported'))
+      const stored = [profilePath, cachePath].filter(Boolean).join(' · ')
+      if (source === 'skeleton') {
+        setLiMsg(t('milo.linkedinSkeleton'))
+      } else if (source === 'parsed') {
+        setLiMsg(stored ? `${t('milo.linkedinParsed')} ${stored}` : t('milo.linkedinParsed'))
+      } else {
+        setLiMsg(stored ? `${t('milo.linkedinImported')} ${stored}` : t('milo.linkedinImported'))
+      }
       onSaved?.()
     } catch (e) {
       setErr(String(e.detail || e.message || e))
@@ -543,7 +613,7 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
                 label={t('profile.fields.linkedin')}
                 value={newLinkedin}
                 onChange={(v) => { setNewLinkedin(v ?? ''); setLiMsg(null) }}
-                placeholder="your-linkedin-slug"
+                placeholder="linkedin.com/in/… or ?profileId="
               />
               {isValidLinkedinUsername(newLinkedin) && (
                 <a
@@ -574,7 +644,7 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
                 {liBusy ? t('milo.linkedinParsing') : t('milo.linkedinImport')}
               </button>
               {liMsg && <div className="mt-1 font-mono text-[12px] text-emerald-retro">{liMsg}</div>}
-              <div className="mt-1 font-mono text-[10px] text-slate-600">{t('profile.linkedinSetupHint')}</div>
+              <LinkedInMcpNote status={mcpStatus} t={t} />
             </div>
             <div>
               <span className="font-mono text-[12px] text-slate-500">{t('profile.setupCv')}</span>
@@ -659,6 +729,8 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
               {tab === 'basics' && (
                 <div className="space-y-3">
                   <LabeledInput label={t('profile.fields.name')} value={profile.basics?.name} onChange={(v) => setBasics({ name: v ?? '' })} />
+                  <LabeledInput label={t('profile.fields.headline')} value={profile.basics?.headline} onChange={(v) => setBasics({ headline: v ?? '' })} />
+                  <TextArea label={t('profile.fields.summary')} value={profile.basics?.summary} onChange={(v) => setBasics({ summary: v ?? '' })} rows={4} />
                   <LabeledInput label={t('profile.fields.location')} value={profile.basics?.location} onChange={(v) => setBasics({ location: v })} />
                   <LabeledInput label={t('profile.fields.email')} type="email" value={profile.basics?.email} onChange={(v) => setBasics({ email: v ?? '' })} placeholder="you@example.com" />
                   <LabeledInput label={t('profile.fields.phone')} value={profile.basics?.phone} onChange={(v) => setBasics({ phone: v ?? '' })} placeholder="+852 1234 5678" />
@@ -672,7 +744,7 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
                     <UrlHint href={githubProfileUrl(profile.basics?.github)} />
                   </div>
                   <div>
-                    <LabeledInput label={t('profile.fields.linkedin')} value={profile.basics?.linkedin} onChange={(v) => setBasics({ linkedin: v ?? '' })} placeholder="your-linkedin-slug" />
+                    <LabeledInput label={t('profile.fields.linkedin')} value={profile.basics?.linkedin} onChange={(v) => setBasics({ linkedin: v ?? '' })} placeholder="linkedin.com/in/… or ?profileId=" />
                     <UrlHint href={linkedinProfileUrl(profile.basics?.linkedin)} />
                     {mode === 'edit' && (
                       <button
@@ -685,7 +757,7 @@ export default function ProfileEditor({ candidateId, onClose, onSaved }) {
                       </button>
                     )}
                     {liMsg && <div className="mt-1 font-mono text-[12px] text-emerald-retro">{liMsg}</div>}
-                    <div className="mt-1 font-mono text-[10px] text-slate-600">{t('milo.linkedinHint')}</div>
+                    <LinkedInMcpNote status={mcpStatus} t={t} />
                   </div>
                   <LabeledInput label={t('profile.fields.minSalary')} type="number" value={profile.basics?.min_expected_salary_hkd} onChange={(v) => setBasics({ min_expected_salary_hkd: v })} />
                   <div>

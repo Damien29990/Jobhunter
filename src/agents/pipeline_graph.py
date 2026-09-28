@@ -171,6 +171,18 @@ def rex_node(state: dict) -> dict:
     reset_usage("Rex")
     log_system("LangGraph: rex_node started", level="START")
 
+    try:
+        from listing_sweep import sweep_kanban_listings
+
+        sweep = sweep_kanban_listings()
+        log_activity(
+            "Rex",
+            f"Pre-search listing sweep: checked={sweep.get('checked')} "
+            f"expired={sweep.get('expired')}",
+        )
+    except Exception as exc:
+        log_activity("Rex", f"Listing sweep failed: {exc}", level="WARN")
+
     from talent_scout_agent_2 import TalentScoutAgent
     from env_keys import deepseek_api_key, tavily_api_key
 
@@ -251,6 +263,7 @@ def dana_node(state: dict) -> dict:
         deepseek_api_key=deepseek_key,
         tavily_api_key=tavily_key or None,
         backend=backend,
+        profile_path=Path(state.get("profile_path") or str(DEFAULT_PROFILE_PATH)),
     )
     try:
         count = agent.run_pipeline(min_score=80, force_refresh=False)
@@ -287,7 +300,10 @@ def leo_node(state: dict) -> dict:
     from env_keys import deepseek_api_key
 
     deepseek_key = deepseek_api_key()
-    agent = CVGeneratorAgent(deepseek_api_key=deepseek_key)
+    agent = CVGeneratorAgent(
+        deepseek_api_key=deepseek_key,
+        profile_path=Path(state.get("profile_path") or str(DEFAULT_PROFILE_PATH)),
+    )
 
     # If this is a retry, pass the compile error as additional context
     compile_error = state.get("typst_compile_error")
@@ -318,7 +334,10 @@ def clara_node(state: dict) -> dict:
     from env_keys import deepseek_api_key
 
     deepseek_key = deepseek_api_key()
-    agent = CertMatcherAgent(deepseek_api_key=deepseek_key)
+    agent = CertMatcherAgent(
+        deepseek_api_key=deepseek_key,
+        profile_path=Path(state.get("profile_path") or str(DEFAULT_PROFILE_PATH)),
+    )
     count = agent.run_pipeline(min_score=80)
     state["checklist_results"] = [{"count": count}]
     m = _record_metrics("clara", start, True, usage=finalize_usage("Clara"))
@@ -440,9 +459,34 @@ def run_pipeline(
         raise ImportError("langgraph is not installed")
 
     graph = build_pipeline_graph()
+    cid = candidate_id or "default"
+    try:
+        from people_store import resolve_person
+        import sqlite3
+
+        db = PROJECT_ROOT / "job_agent.db"
+        if db.is_file():
+            conn = sqlite3.connect(str(db), timeout=5)
+            try:
+                person = resolve_person(conn, cid)
+            finally:
+                conn.close()
+            if person and person.tag.lower() not in {"default", "master"}:
+                os.environ["JOBHUNTER_PERSON_TAG"] = person.tag
+                os.environ["JOBHUNTER_CANDIDATE_ID"] = person.tag
+    except Exception:
+        if cid.lower() not in {"default", "master"}:
+            os.environ["JOBHUNTER_PERSON_TAG"] = cid
+            os.environ["JOBHUNTER_CANDIDATE_ID"] = cid
+    if profile_path:
+        resolved = profile_path
+    elif cid == "default":
+        resolved = str(DEFAULT_PROFILE_PATH)
+    else:
+        resolved = str(PROJECT_ROOT / "config" / "profiles" / f"{cid}.json")
     initial_state = {
-        "candidate_id": candidate_id,
-        "profile_path": profile_path or str(DEFAULT_PROFILE_PATH),
+        "candidate_id": cid,
+        "profile_path": resolved,
         "profile": {},
         "acceptance_context": None,
         "milo_summary": None,
@@ -463,7 +507,7 @@ def run_pipeline(
     log_system("LangGraph pipeline run started", level="START")
     try:
         final_state = graph.invoke(
-            initial_state, {"configurable": {"thread_id": candidate_id}}
+            initial_state, {"configurable": {"thread_id": cid}}
         )
     except Exception as exc:
         log_system(f"LangGraph pipeline crashed: {exc}", level="ERROR")

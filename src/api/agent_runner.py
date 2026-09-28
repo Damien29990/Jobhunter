@@ -1,9 +1,10 @@
 """Subprocess manager for agent runs.
 
-Spawns the real agent scripts with their REAL CLI args (only Agent 1 accepts
---profile; Agents 2-4 have no profile concept yet). Tracks per-agent state
-(IDLE/WORKING/FAILED) in memory and tails recent stdout/stderr lines for the
-pixel office status bubbles.
+Spawns the real agent scripts with their REAL CLI args. Every agent receives
+``--profile`` so Milo chat/README, Rex, Dana, Leo, and Clara use the selected
+person (config/master_profile.json vs config/profiles/{id}.json). Tracks
+per-agent state (IDLE/WORKING/FAILED) in memory and tails recent stdout/stderr
+lines for the pixel office status bubbles.
 
 # Ref: workspace rule — deterministic logic separation; the dashboard triggers
 agents, agents own DB writes. The dashboard never writes to job_agent.db.
@@ -33,11 +34,11 @@ DEFAULT_PROFILE = PROJECT_ROOT / "config" / "master_profile.json"
 
 # Each agent: key -> (character, script, accepts_profile)
 AGENTS = {
-    "milo": ("Milo", "milo_intake.py", False),
+    "milo": ("Milo", "milo_intake.py", True),
     "rex": ("Rex", "talent_scout_agent_2.py", True),
-    "dana": ("Dana", "due_diligence_agent.py", False),
-    "leo": ("Leo", "cv_generator_agent.py", False),
-    "clara": ("Clara", "cert_matcher_agent.py", False),
+    "dana": ("Dana", "due_diligence_agent.py", True),
+    "leo": ("Leo", "cv_generator_agent.py", True),
+    "clara": ("Clara", "cert_matcher_agent.py", True),
 }
 
 MAX_TAIL_LINES = 40
@@ -143,18 +144,60 @@ class AgentRunner:
 
     @staticmethod
     def resolve_profile_path(candidate_id: Optional[str]) -> Path:
-        """Resolve a --profile path for Agent 1.
+        """Resolve a --profile path for the selected person.
 
-        Forward-compatible multi-user: if config/profiles/{id}.json exists use it,
-        else fall back to config/master_profile.json. candidate_id may be None.
+        ``default`` → config/master_profile.json
+        other ids  → config/profiles/{id}.json
+        Do not fall back to master when a named id is selected.
+        # Ref: GET /api/candidates path layout
         """
-        if candidate_id:
-            cand = PROFILES_DIR / f"{candidate_id}.json"
-            if cand.is_file():
-                return cand
-        if DEFAULT_PROFILE.is_file():
+        cid = (candidate_id or "default").strip() or "default"
+        db = PROJECT_ROOT / "job_agent.db"
+        if db.is_file():
+            try:
+                import sqlite3
+                from people_store import resolve_profile_path_for_ref
+
+                conn = sqlite3.connect(str(db), timeout=10)
+                try:
+                    found = resolve_profile_path_for_ref(conn, cid, PROJECT_ROOT)
+                finally:
+                    conn.close()
+                if found is not None:
+                    return found
+            except Exception:
+                pass
+        if cid == "default":
             return DEFAULT_PROFILE
-        return DEFAULT_PROFILE  # let the agent raise if truly missing
+        return PROFILES_DIR / f"{cid}.json"
+
+    @staticmethod
+    def person_env(candidate_id: Optional[str]) -> dict[str, str]:
+        """JOBHUNTER_PERSON_TAG for Telegram in agent subprocesses."""
+        cid = (candidate_id or "").strip() or "default"
+        tag = ""
+        db = PROJECT_ROOT / "job_agent.db"
+        if db.is_file():
+            try:
+                import sqlite3
+                from people_store import resolve_person
+
+                conn = sqlite3.connect(str(db), timeout=10)
+                try:
+                    person = resolve_person(conn, cid)
+                finally:
+                    conn.close()
+                if person:
+                    tag = person.tag
+                    cid = tag or cid
+            except Exception:
+                pass
+        env: dict[str, str] = {}
+        if tag and tag.lower() not in {"default", "master"}:
+            env["JOBHUNTER_PERSON_TAG"] = tag
+        if cid and cid.lower() not in {"default", "master"}:
+            env["JOBHUNTER_CANDIDATE_ID"] = cid
+        return env
 
     # -- command building ---------------------------------------------------
 
@@ -171,8 +214,6 @@ class AgentRunner:
                 cmd += ["--job-url", job_url]
             elif req.query:
                 cmd += ["--query", req.query]
-            if accepts_profile:
-                cmd += ["--profile", str(self.resolve_profile_path(req.candidate_id))]
         elif agent_key == "dana":
             if req.min_score is not None:
                 cmd += ["--min-score", str(req.min_score)]
@@ -210,6 +251,7 @@ class AgentRunner:
         elif agent_key == "milo":
             if req.query:
                 cmd += ["--cv", req.query]  # reuse query field for CV path
+        if accepts_profile:
             cmd += ["--profile", str(self.resolve_profile_path(req.candidate_id))]
         return cmd
 
@@ -228,6 +270,7 @@ class AgentRunner:
         # (e.g. talent_scout_agent_2 prints 🦭 — cp950 can't encode it.)
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        env.update(self.person_env(getattr(req, "candidate_id", None)))
         # Agents load .env themselves via load_dotenv, but pass through anyway.
         try:
             proc = subprocess.Popen(
@@ -450,12 +493,27 @@ class AgentRunner:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        env.update(self.person_env(getattr(req, "candidate_id", None)))
         try:
             for key in self.PIPELINE_ORDER:
                 with self._lock:
                     self._pipeline.step = key
                 self._pipeline.log.append(f"[pipeline] starting {key}")
                 cmd = self._build_cmd(key, req)
+                if key == "rex":
+                    self._pipeline.log.append("[pipeline] listing check before Rex")
+                    log_system("PIPELINE listing sweep before Rex", level="START")
+                    try:
+                        from listing_sweep import sweep_kanban_listings
+
+                        sweep = sweep_kanban_listings()
+                        self._pipeline.log.append(
+                            f"[pipeline] listing check checked={sweep.get('checked')} "
+                            f"expired={sweep.get('expired')}"
+                        )
+                    except Exception as exc:
+                        log_system(f"listing sweep failed: {exc}", level="WARN")
+                        self._pipeline.log.append(f"[pipeline] listing check error: {exc}")
                 log_system(f"PIPELINE -> {key}", level="START")
                 proc = subprocess.Popen(
                     cmd,

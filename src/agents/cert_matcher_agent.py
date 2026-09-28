@@ -40,7 +40,7 @@ from talent_scout_agent import (  # noqa: E402
 from activity_logger import log_activity  # noqa: E402
 from llm_usage import finalize_usage, instrument_openai  # noqa: E402
 from milo_context import milo_readme_prompt_block  # noqa: E402
-from notify import notify_job_update  # noqa: E402
+from notify import notify_application_package, notify_job_update  # noqa: E402
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MIN_MATCH_SCORE = 80
@@ -351,7 +351,8 @@ class CertMatcherAgent:
         """
         cursor = self.db_manager.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet,
+            SELECT id, job_url, job_title, company_name,
+                   COALESCE(jd_full, jd_snippet) AS jd_snippet,
                    match_score, cv_pdf_path, cv_typ_path
             FROM job_postings
             WHERE match_score >= ?
@@ -381,7 +382,8 @@ class CertMatcherAgent:
         """Load one job for a Clara re-run even if application_ready is already set."""
         cursor = self.db_manager.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet,
+            SELECT id, job_url, job_title, company_name,
+                   COALESCE(jd_full, jd_snippet) AS jd_snippet,
                    match_score, cv_pdf_path, cv_typ_path
             FROM job_postings
             WHERE id = ?
@@ -636,11 +638,79 @@ JSON Schema:
                 """
                 UPDATE job_postings
                 SET application_ready = ?,
-                    application_checklist_path = COALESCE(?, application_checklist_path)
+                    application_checklist_path = COALESCE(?, application_checklist_path),
+                    application_status = CASE
+                        WHEN ? = 1 AND (
+                            application_status IS NULL
+                            OR TRIM(COALESCE(application_status, '')) = ''
+                        ) THEN 'READY'
+                        ELSE application_status
+                    END
                 WHERE id = ?
                 """,
-                (1 if application_ready else 0, checklist_path, job_id),
+                (
+                    1 if application_ready else 0,
+                    checklist_path,
+                    1 if application_ready else 0,
+                    job_id,
+                ),
             )
+
+    def _existing_file(self, *candidates: Optional[str]) -> str:
+        from pathlib import Path
+
+        for raw in candidates:
+            if not raw:
+                continue
+            path = Path(raw)
+            if path.is_file():
+                return str(path)
+        return ""
+
+    def _send_pack_to_telegram(self, job: dict, checklist_path: str, channel: str) -> None:
+        """Same files as dashboard Application Pack → Telegram."""
+        cv = self._existing_file(job.get("cv_pdf_path"), job.get("cv_typ_path"))
+        letter = self._existing_file(
+            job.get("cover_letter_pdf_path"), job.get("cover_letter_typ_path")
+        )
+        company = job.get("company_name") or ""
+        title = job.get("job_title") or ""
+        url = job.get("job_url") or ""
+        try:
+            row = self.db_manager.db.execute(
+                "SELECT cv_pdf_path, cv_typ_path, cover_letter_pdf_path, cover_letter_typ_path, "
+                "company_name, job_title, job_url FROM job_postings WHERE id = ?",
+                (job["id"],),
+            ).fetchone()
+        except Exception:
+            row = None
+        if row:
+            cv = self._existing_file(row[0], row[1]) or cv
+            letter = self._existing_file(row[2], row[3]) or letter
+            company = row[4] or company
+            title = row[5] or title
+            url = row[6] or url
+        dossier = ""
+        try:
+            drow = self.db_manager.db.execute(
+                "SELECT markdown_path FROM company_dossiers "
+                "WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))",
+                (company,),
+            ).fetchone()
+            if drow:
+                dossier = self._existing_file(drow[0])
+        except Exception:
+            dossier = ""
+        notify_application_package(
+            company=company,
+            title=title,
+            url=url,
+            extra=channel,
+            cv_pdf_path=cv,
+            cover_letter_path=letter,
+            checklist_path=self._existing_file(checklist_path),
+            dossier_path=dossier,
+        )
 
     # -- orchestration -------------------------------------------------------
 
@@ -685,6 +755,11 @@ JSON Schema:
             title=title,
             url=job.get("job_url") or "",
             extra=pack.submission_audit.application_channel,
+        )
+        self._send_pack_to_telegram(
+            job,
+            checklist_path=str(checklist_path),
+            channel=pack.submission_audit.application_channel,
         )
         return {
             "job_id": job["id"],
@@ -755,6 +830,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Rebuild the checklist even if application_ready is already set",
     )
+    parser.add_argument(
+        "--profile",
+        default=str(DEFAULT_PROFILE_PATH),
+        help="Candidate JSON: config/master_profile.json or config/profiles/{id}.json",
+    )
     args = parser.parse_args()
 
     load_dotenv(PROJECT_ROOT / ".env")
@@ -763,7 +843,10 @@ if __name__ == "__main__":
     if not deepseek_key:
         raise SystemExit("Set DEEPSEEK_API_KEY in the environment or a .env file.")
     print(f"Using DeepSeek {os.environ.get('DEEPSEEK_MODEL', DEEPSEEK_CHAT_MODEL)} @ {DEEPSEEK_BASE_URL}")
-    agent = CertMatcherAgent(deepseek_api_key=deepseek_key)
+    agent = CertMatcherAgent(
+        deepseek_api_key=deepseek_key,
+        profile_path=Path(args.profile),
+    )
     agent.run_pipeline(
         min_score=args.min_score,
         job_id=args.job_id,

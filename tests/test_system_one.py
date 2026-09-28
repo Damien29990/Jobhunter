@@ -78,3 +78,16 @@ def test_dana_reruns_when_newer_job_arrives() -> None:
         force=False,
     )
     assert decision.proceed is True
+
+
+def test_evaluates_researcher_data_science_hkpc() -> None:
+    jd = (
+        "Hong Kong Productivity Council is hiring a Researcher, AI and Data Science "
+        "in Kowloon. Work on applied AI for manufacturing in Hong Kong."
+    )
+    decision = should_evaluate_jd(
+        title="Researcher, AI and Data Science",
+        content=jd,
+        url="https://hk.jobsdb.com/job/94495079",
+    )
+    assert decision.proceed is True

@@ -34,10 +34,15 @@ from listing_filters import (  # noqa: E402
     hkstp_postings_from_listing_text,
     listing_text_supports_title,
     listing_url_problem,
+    listing_duplicate_key,
+    listing_titles_same_vacancy,
     normalize_listing_url,
+    parse_posted_at,
     prefer_listing_title,
     title_from_job_url,
     display_listing_title,
+    clip_listing_text,
+    listing_full_text,
 )
 from llm_usage import instrument_openai  # noqa: E402
 
@@ -697,6 +702,13 @@ class JobDBManager:
                 ("acceptance_context_json", "TEXT"),
                 ("expired", "BOOLEAN"),
                 ("user_status", "TEXT"),
+                ("posted_at", "TEXT"),
+                ("jd_full", "TEXT"),
+                ("application_status", "TEXT"),
+                ("application_note", "TEXT"),
+                ("employer_update_note", "TEXT"),
+                ("application_status_at", "TEXT"),
+                ("employer_update_at", "TEXT"),
             ):
                 if column not in existing:
                     self.db.execute(
@@ -749,6 +761,12 @@ class JobDBManager:
                 );
             """)
             self._rewrite_phenom_listing_urls()
+            self._collapse_duplicate_jobs()
+            self._backfill_posted_at()
+            from people_store import ensure_schema, sync_people_from_config
+
+            ensure_schema(self.db)
+            sync_people_from_config(self.db, PROJECT_ROOT)
 
     def _rewrite_phenom_listing_urls(self) -> None:
         """Fix HKJC/HKT Phenom URLs so the dashboard link opens the vacancy."""
@@ -769,22 +787,122 @@ class JobDBManager:
                     (new_url or url, new_title or title, job_id),
                 )
             except sqlite3.IntegrityError:
+                other = self.job_id_for_url(new_url)
+                if other is not None and other != int(job_id):
+                    self.db.execute(
+                        "UPDATE job_postings SET expired = 1 WHERE id = ?",
+                        (int(job_id),),
+                    )
+
+    def _collapse_duplicate_jobs(self) -> None:
+        """Hide extra rows for the same employer + title (e.g. HKPC on two boards).
+
+        # Ref: job_url UNIQUE does not catch the same vacancy on JobsDB vs careers
+        """
+        try:
+            rows = self.db.execute(
+                """
+                SELECT id, company_name, job_title, match_score, cv_status
+                FROM job_postings
+                WHERE COALESCE(expired, 0) = 0
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        groups: dict[str, list[tuple[int, int, str, str]]] = {}
+        for job_id, company, title, score, cv_status in rows:
+            company_key = (company or "").strip().lower()
+            if listing_duplicate_key(company or "", title or "") is None:
                 continue
+            groups.setdefault(company_key, []).append(
+                (int(job_id), int(score or 0), str(title or ""), str(cv_status or ""))
+            )
+        with self.db:
+            for items in groups.values():
+                clusters: list[list[tuple[int, int, str, str]]] = []
+                for item in items:
+                    placed = False
+                    for cluster in clusters:
+                        if listing_titles_same_vacancy(item[2], cluster[0][2]):
+                            cluster.append(item)
+                            placed = True
+                            break
+                    if not placed:
+                        clusters.append([item])
+                for cluster in clusters:
+                    if len(cluster) < 2:
+                        continue
+                    cluster.sort(
+                        key=lambda row: (1 if row[3] else 0, row[1], -row[0]),
+                        reverse=True,
+                    )
+                    for job_id, _score, _title, _cv in cluster[1:]:
+                        self.db.execute(
+                            "UPDATE job_postings SET expired = 1 WHERE id = ?",
+                            (job_id,),
+                        )
+
+    def _backfill_posted_at(self) -> None:
+        """Parse board publish time from stored JD text when posted_at is empty."""
+        try:
+            rows = self.db.execute(
+                """
+                SELECT id, jd_snippet
+                FROM job_postings
+                WHERE posted_at IS NULL OR TRIM(COALESCE(posted_at, '')) = ''
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        with self.db:
+            for job_id, snippet in rows:
+                stamp = parse_posted_at(snippet or "")
+                if not stamp:
+                    continue
+                self.db.execute(
+                    "UPDATE job_postings SET posted_at = ? WHERE id = ?",
+                    (stamp, int(job_id)),
+                )
 
     def job_exists(self, url: str) -> bool:
-        cursor = self.db.execute("SELECT 1 FROM job_postings WHERE job_url = ?", (url,))
-        return cursor.fetchone() is not None
+        return self.job_id_for_url(url) is not None
 
     def job_id_for_url(self, url: str) -> Optional[int]:
         """Return stored posting id for this URL, if any.
 
         # Ref: job_postings.job_url UNIQUE — skip duplicate Rex inserts
         """
+        for candidate in dict.fromkeys(
+            [url, normalize_listing_url(url or "")]
+        ):
+            if not candidate:
+                continue
+            cursor = self.db.execute(
+                "SELECT id FROM job_postings WHERE job_url = ?", (candidate,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return int(row[0])
+        return None
+
+    def job_id_for_company_title(self, company_name: str, job_title: str) -> Optional[int]:
+        """Active row with the same employer + title, even on a different board URL."""
+        company = (company_name or "").strip()
+        title = re.sub(r"\s+", " ", (job_title or "").strip())
+        if listing_duplicate_key(company, title) is None:
+            return None
         cursor = self.db.execute(
-            "SELECT id FROM job_postings WHERE job_url = ?", (url,)
+            """
+            SELECT id, job_title FROM job_postings
+            WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))
+              AND COALESCE(expired, 0) = 0
+            """,
+            (company,),
         )
-        row = cursor.fetchone()
-        return int(row[0]) if row else None
+        for row in cursor.fetchall():
+            if listing_titles_same_vacancy(title, row[1] or ""):
+                return int(row[0])
+        return None
 
     def list_jobs_matching_targets(
         self,
@@ -834,9 +952,15 @@ class JobDBManager:
         if gaps is None:
             gaps = job_data.get("missing_skills") or []
         existing_id = self.job_id_for_url(job_data["job_url"])
-        if existing_id is None and job_data.get("job_url"):
-            existing_id = self.job_id_for_url(normalize_listing_url(job_data["job_url"]))
+        if existing_id is None:
+            existing_id = self.job_id_for_company_title(
+                str(job_data.get("company_name") or ""),
+                str(job_data.get("job_title") or ""),
+            )
         if existing_id is not None:
+            posted_at = (job_data.get("posted_at") or "").strip()
+            if posted_at:
+                self.fill_posted_at(existing_id, posted_at)
             return existing_id
         with self.db:
             try:
@@ -845,10 +969,10 @@ class JobDBManager:
                     job_url, company_name, job_title, source_domain, source_lane,
                     location_mode, salary_range, match_score,
                     matched_skills, missing_skills, is_direct_hire,
-                    recommendation_reason, jd_snippet, created_at,
+                    recommendation_reason, jd_snippet, jd_full, created_at,
                     target_industry, hard_skill_match_score, transferability_score,
-                    transferable_strengths, career_advisory_note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    transferable_strengths, career_advisory_note, posted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job_data.get("job_url") and normalize_listing_url(job_data["job_url"]) or job_data["job_url"],
                 job_data["company_name"],
@@ -859,12 +983,14 @@ class JobDBManager:
                 job_data["match_score"], json.dumps(job_data.get("matched_skills") or strengths),
                 json.dumps(job_data.get("missing_skills") or gaps), job_data["is_direct_hire"],
                 job_data["recommendation_reason"], job_data["jd_snippet"],
+                clip_listing_text(str(job_data.get("jd_full") or job_data.get("jd_snippet") or "")),
                 job_data["created_at"],
                 job_data.get("target_industry"),
                 job_data.get("hard_skill_match_score"),
                 job_data.get("transferability_score"),
                 json.dumps(strengths, ensure_ascii=False),
                 job_data.get("career_advisory_note"),
+                job_data.get("posted_at") or None,
             ))
                 row_id = cursor.lastrowid
                 self.db.execute(
@@ -929,11 +1055,13 @@ class JobDBManager:
                     is_direct_hire = ?,
                     recommendation_reason = ?,
                     jd_snippet = COALESCE(?, jd_snippet),
+                    jd_full = COALESCE(NULLIF(?, ''), jd_full),
                     target_industry = ?,
                     hard_skill_match_score = ?,
                     transferability_score = ?,
                     transferable_strengths = ?,
-                    career_advisory_note = ?
+                    career_advisory_note = ?,
+                    posted_at = COALESCE(NULLIF(?, ''), posted_at)
                 WHERE id = ?
                 """,
                 (
@@ -948,13 +1076,29 @@ class JobDBManager:
                     job_data.get("is_direct_hire"),
                     job_data.get("recommendation_reason"),
                     job_data.get("jd_snippet"),
+                    clip_listing_text(str(job_data.get("jd_full") or "")),
                     job_data.get("target_industry"),
                     job_data.get("hard_skill_match_score"),
                     job_data.get("transferability_score"),
                     json.dumps(strengths, ensure_ascii=False),
                     job_data.get("career_advisory_note"),
+                    job_data.get("posted_at") or "",
                     int(job_id),
                 ),
+            )
+
+    def fill_posted_at(self, job_id: int, posted_at: str) -> None:
+        stamp = (posted_at or "").strip()
+        if not stamp:
+            return
+        with self.db:
+            self.db.execute(
+                """
+                UPDATE job_postings
+                SET posted_at = COALESCE(NULLIF(posted_at, ''), ?)
+                WHERE id = ?
+                """,
+                (stamp, int(job_id)),
             )
 
     def mark_listing_eval_skipped(self, job_id: int, reason: str) -> None:
@@ -969,12 +1113,14 @@ class JobDBManager:
             )
 
     def refresh_pending_jd_snippet(
-        self, job_id: int, *, company_name: str, job_title: str, jd_snippet: str
+        self, job_id: int, *, company_name: str, job_title: str, jd_snippet: str,
+        jd_full: str = "",
     ) -> None:
-        """Fill snippet on a store-first row that is not scored yet.
+        """Fill snippet and full JD on a store-first row that is not scored yet.
 
-        # Ref: save_job returns existing id without rewriting snippet
+        # Ref: job_postings.jd_full + jd_snippet
         """
+        full = clip_listing_text(jd_full or jd_snippet)
         with self.db:
             self.db.execute(
                 """
@@ -982,6 +1128,7 @@ class JobDBManager:
                 SET company_name = ?,
                     job_title = ?,
                     jd_snippet = ?,
+                    jd_full = COALESCE(NULLIF(?, ''), jd_full, ?),
                     recommendation_reason = ?
                 WHERE id = ?
                 """,
@@ -989,6 +1136,8 @@ class JobDBManager:
                     company_name,
                     job_title,
                     jd_snippet,
+                    full,
+                    full,
                     "pending_eval",
                     int(job_id),
                 ),
@@ -1063,7 +1212,7 @@ class JobDBManager:
                 MAX(j.match_score) AS best_score,
                 GROUP_CONCAT(DISTINCT j.job_title) AS job_titles,
                 GROUP_CONCAT(DISTINCT j.job_url) AS job_urls,
-                GROUP_CONCAT(DISTINCT substr(j.jd_snippet, 1, 240)) AS jd_snippets
+                GROUP_CONCAT(DISTINCT substr(COALESCE(j.jd_full, j.jd_snippet), 1, 8000)) AS jd_snippets
             FROM job_postings j
             WHERE COALESCE(j.match_score, 0) >= ?
               AND COALESCE(j.expired, 0) = 0
@@ -1090,7 +1239,7 @@ class JobDBManager:
     def get_job_by_id(self, job_id: int) -> Optional[dict]:
         cursor = self.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet, match_score
+            SELECT id, job_url, job_title, company_name, jd_snippet, jd_full, match_score
             FROM job_postings
             WHERE id = ?
             """,
@@ -1099,13 +1248,16 @@ class JobDBManager:
         row = cursor.fetchone()
         if not row:
             return None
+        snippet = row[4] or ""
+        full = row[5] or snippet
         return {
             "id": row[0],
             "job_url": row[1],
             "job_title": row[2],
             "company_name": row[3],
-            "jd_snippet": row[4] or "",
-            "match_score": row[5],
+            "jd_snippet": snippet,
+            "jd_full": full,
+            "match_score": row[6],
         }
 
     def list_active_jobs_for_company(
@@ -1119,7 +1271,7 @@ class JobDBManager:
         """
         cursor = self.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet, match_score
+            SELECT id, job_url, job_title, company_name, jd_snippet, jd_full, match_score
             FROM job_postings
             WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))
               AND COALESCE(expired, 0) = 0
@@ -1129,13 +1281,14 @@ class JobDBManager:
             (company_name, min_score),
         )
         rows = []
-        for job_id, url, title, company, snippet, score in cursor.fetchall():
+        for job_id, url, title, company, snippet, full, score in cursor.fetchall():
             rows.append({
                 "id": job_id,
                 "job_url": url or "",
                 "job_title": title or "",
                 "company_name": company or "",
                 "jd_snippet": snippet or "",
+                "jd_full": full or snippet or "",
                 "match_score": score,
             })
         return rows
@@ -1152,7 +1305,7 @@ class JobDBManager:
         """High-score jobs whose stored company_name is a placeholder."""
         cursor = self.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet, match_score
+            SELECT id, job_url, job_title, company_name, jd_snippet, jd_full, match_score
             FROM job_postings
             WHERE COALESCE(expired, 0) = 0
               AND COALESCE(match_score, 0) >= ?
@@ -1160,7 +1313,7 @@ class JobDBManager:
             (min_score,),
         )
         rows = []
-        for job_id, url, title, company, snippet, score in cursor.fetchall():
+        for job_id, url, title, company, snippet, full, score in cursor.fetchall():
             if is_usable_company_name(company or ""):
                 continue
             rows.append({
@@ -1169,6 +1322,7 @@ class JobDBManager:
                 "job_title": title,
                 "company_name": company,
                 "jd_snippet": snippet or "",
+                "jd_full": full or snippet or "",
                 "match_score": score,
             })
         return rows
@@ -1259,22 +1413,60 @@ class JobDBManager:
 
     # --- Milo chat history (Agent 0) ---
 
-    def save_chat_message(self, candidate_id: str, role: str, content: str) -> None:
-        """Store a single chat message for Milo's chatbot.
+    def upsert_person_for_profile(self, profile_path: Path, profile: dict):
+        """Ensure a people row exists for this profile JSON.
 
-        # Ref: milo_intake_agent — full chat history persistence.
+        # Ref: people.tag never default/master
         """
+        from people_store import (
+            relative_profile_path,
+            tag_for_profile_file,
+            upsert_person,
+        )
+
+        basics = profile.get("basics") if isinstance(profile.get("basics"), dict) else {}
+        name = str(basics.get("name") or "").strip()
+        path = Path(profile_path)
+        rel = relative_profile_path(path, PROJECT_ROOT)
+        existing = self.db.execute(
+            "SELECT is_master FROM people WHERE profile_path = ?", (rel,)
+        ).fetchone()
+        has_master = self.db.execute(
+            "SELECT 1 FROM people WHERE is_master = 1 LIMIT 1"
+        ).fetchone()
+        make_master = bool(existing and existing[0]) or (
+            path.name == "master_profile.json" and has_master is None
+        )
+        person = upsert_person(
+            self.db,
+            tag=tag_for_profile_file(path, name),
+            full_name=name,
+            profile_path=rel,
+            is_master=make_master,
+        )
+        self.db.commit()
+        return person
+
+    def save_chat_message(self, person_id: int, role: str, content: str, tag: str = "") -> None:
+        """Store a Milo chat turn keyed by integer person_id.
+
+        tag is the people.tag label only (never default/master).
+        # Ref: milo_chat_history.person_id
+        """
+        label = tag if tag and tag.lower() not in {"default", "master"} else ""
         with self.db:
             self.db.execute(
-                "INSERT INTO milo_chat_history (candidate_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (candidate_id, role, content, now_hk_iso()),
+                "INSERT INTO milo_chat_history "
+                "(person_id, candidate_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (int(person_id), label, role, content, now_hk_iso()),
             )
 
-    def load_chat_history(self, candidate_id: str) -> List[dict]:
-        """Load all chat messages for a candidate, ordered chronologically."""
+    def load_chat_history(self, person_id: int) -> List[dict]:
+        """Load Milo turns for a people.id."""
         cursor = self.db.execute(
-            "SELECT role, content FROM milo_chat_history WHERE candidate_id = ? ORDER BY id",
-            (candidate_id,),
+            "SELECT role, content FROM milo_chat_history WHERE person_id = ? ORDER BY id",
+            (int(person_id),),
         )
         return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
 
@@ -1737,7 +1929,12 @@ class TalentScoutAgent:
                 "is_direct_hire": eval_res.is_direct_hire,
                 "recommendation_reason": eval_res.recommendation_reason,
                 "jd_snippet": summarize_jd(self.client, self.chat_model, content),
+                "jd_full": clip_listing_text(content),
                 "created_at": now_hk_iso(),
+                "posted_at": parse_posted_at(
+                    raw.get("published_date") or "",
+                    content,
+                ) or None,
             }
             self.db_manager.save_job(job_record, embedding)
             discovered_count += 1

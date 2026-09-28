@@ -6,11 +6,12 @@ import { useTranslation } from 'react-i18next'
 import {
   X, Building2, MapPin, Coins, Link as LinkIcon, FileText, FileCheck,
   ClipboardList, TriangleAlert, ShieldCheck, ExternalLink, LoaderCircle,
-  RefreshCw, CircleCheck, Unlink, Power, Ban, RotateCcw, ChevronLeft, ChevronRight,
+  RefreshCw, CircleCheck, Unlink, Power, Ban, RotateCcw, ChevronLeft, ChevronRight, Send,
 } from 'lucide-react'
 import { api, formatHKDateTime } from '../lib/api'
 import DossierBody from './DossierBody'
 import { PIPELINE_STAGES } from './PipelineKanban'
+import ApplicationFollowUp from './ApplicationFollowUp'
 import { /* JobStageStrip, */ StageEmptyCta, StagePaneAction, useJobStageRunner } from './JobStageActions'
 
 function Chip({ children, color = '#06b6d4' }) {
@@ -213,7 +214,7 @@ function RunDanaButton({ job, t, onStarted }) {
   )
 }
 
-function OverviewTab({ job, dossier, t, onJobChanged }) {
+function OverviewTab({ job, dossier, t, onJobChanged, candidateId }) {
   return (
     <div className="space-y-3">
       <JobStatusRow job={job} onChanged={onJobChanged} />
@@ -274,10 +275,14 @@ function OverviewTab({ job, dossier, t, onJobChanged }) {
           <p className="font-mono text-[12px] text-slate-300">{job.career_advisory_note}</p>
         </div>
       )}
-      {job.jd_snippet && (
+      {(job.jd_full || job.jd_snippet) && (
         <div>
-          <div className="font-mono text-[12px] text-slate-500 mb-1">{t('job.jdSnippet')}</div>
-          <p className="font-sans text-[13px] text-slate-400 leading-relaxed">{job.jd_snippet}</p>
+          <div className="font-mono text-[12px] text-slate-500 mb-1">
+            {job.jd_full ? t('job.jdFull') : t('job.jdSnippet')}
+          </div>
+          <p className="font-sans text-[13px] text-slate-400 leading-relaxed whitespace-pre-wrap">
+            {job.jd_full || job.jd_snippet}
+          </p>
         </div>
       )}
       {job.job_url && (
@@ -305,7 +310,120 @@ function DossierTab({ jobId, dossier, t, onSelectJob, emptyCta, paneAction }) {
   )
 }
 
-function AppPackTab({ job, t, previewKey, emptyCta, paneAction }) {
+function SendTelegramButton({ job, t, candidateId }) {
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState(null)
+  const [err, setErr] = useState(null)
+
+  async function send() {
+    setSending(true); setResult(null); setErr(null)
+    try {
+      const res = await api.sendToTelegram(job.id, candidateId)
+      if (res.sent != null) {
+        setResult(res)
+      } else {
+        setErr(String(res.detail || res.error || 'unknown'))
+      }
+    } catch (e) {
+      const msg = e?.message || String(e)
+      setErr(msg.includes('503') ? t('detail.telegramNotConfigured') : msg)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="panel-inset p-2.5">
+      <div className="flex items-center gap-2 mb-1.5">
+        <Send size={14} className="text-cyan-retro shrink-0" />
+        <span className="font-pixel text-[11px] text-cyan-retro">{t('detail.sendTelegram')}</span>
+      </div>
+      <p className="font-mono text-[11px] text-slate-500 leading-4 mb-2">{t('detail.sendTelegramHint')}</p>
+      <button
+        onClick={send}
+        disabled={sending}
+        className="w-full panel px-3 py-2 flex items-center justify-center gap-2 font-pixel text-[11px] text-cyan-retro disabled:opacity-50"
+        style={{ borderColor: '#06b6d4' }}
+      >
+        {sending ? <LoaderCircle size={13} className="animate-spin" /> : <Send size={13} />}
+        {sending ? t('detail.sending') : t('detail.sendNow')}
+      </button>
+      {result && (
+        <div className="mt-2 font-mono text-[11px] text-emerald-retro">
+          {t('detail.telegramSent', { sent: result.sent, failed: result.failed, skipped: result.skipped })}
+        </div>
+      )}
+      {err && (
+        <div className="mt-2 font-mono text-[11px] text-rose-retro flex items-center gap-1">
+          <TriangleAlert size={12} /> {err}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SendTelegramInfoButton({ job, t, candidateId }) {
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState(null)
+  const [err, setErr] = useState(null)
+
+  async function send() {
+    setSending(true); setResult(null); setErr(null)
+    try {
+      const res = await api.sendTelegramInfo(job.id, candidateId)
+      if (res?.ok) {
+        setResult(true)
+      } else {
+        setErr(String(res?.detail || res?.error || 'unknown'))
+      }
+    } catch (e) {
+      const msg = e?.message || String(e)
+      setErr(msg.includes('503') ? t('detail.telegramNotConfigured') : msg)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="panel-inset p-2.5">
+      <div className="flex items-center gap-2 mb-1.5">
+        <Send size={14} className="text-cyan-retro shrink-0" />
+        <span className="font-pixel text-[11px] text-cyan-retro">{t('detail.sendTelegramInfo')}</span>
+      </div>
+      <p className="font-mono text-[11px] text-slate-500 leading-4 mb-2">{t('detail.sendTelegramInfoHint')}</p>
+      <button
+        onClick={send}
+        disabled={sending}
+        className="w-full panel px-3 py-2 flex items-center justify-center gap-2 font-pixel text-[11px] text-cyan-retro disabled:opacity-50"
+        style={{ borderColor: '#06b6d4' }}
+      >
+        {sending ? <LoaderCircle size={13} className="animate-spin" /> : <Send size={13} />}
+        {sending ? t('detail.sending') : t('detail.sendNow')}
+      </button>
+      {result && (
+        <div className="mt-2 font-mono text-[11px] text-emerald-retro">
+          {t('detail.telegramInfoSent')}
+          {result.documents && (
+            <span className="text-slate-400">
+              {' '}— {t('detail.telegramSent', {
+                sent: result.documents.sent || 0,
+                failed: result.documents.failed || 0,
+                skipped: result.documents.skipped || 0,
+              })}
+            </span>
+          )}
+        </div>
+      )}
+      {err && (
+        <div className="mt-2 font-mono text-[11px] text-rose-retro flex items-center gap-1">
+          <TriangleAlert size={12} /> {err}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AppPackTab({ job, t, previewKey, emptyCta, paneAction, candidateId, onJobChanged }) {
   if (!job.application_checklist_path) return emptyCta || null
   return (
     <div className="space-y-2">
@@ -316,6 +434,8 @@ function AppPackTab({ job, t, previewKey, emptyCta, paneAction }) {
         </div>
         {paneAction}
       </div>
+      <ApplicationFollowUp job={job} onChanged={onJobChanged} />
+      <SendTelegramInfoButton job={job} t={t} candidateId={candidateId} />
       <iframe
         src={`${api.jobChecklistUrl(job.id)}?v=${previewKey}`}
         className="w-full h-[60vh] panel-inset"
@@ -359,6 +479,7 @@ function CvTab({ job, t, emptyCta, paneAction, candidateId, runner }) {
         </div>
         {paneAction}
       </div>
+      <SendTelegramButton job={job} t={t} candidateId={candidateId} />
       <ul className="space-y-2">
         {files.map((file) => (
           <li key={file.key} className="panel-inset p-3 space-y-2">
@@ -612,6 +733,7 @@ export default function DetailDrawer({
                   job={job}
                   dossier={dossier || job.dossier}
                   t={t}
+                  candidateId={candidateId}
                   onJobChanged={refreshJob}
                 />
               )}
@@ -642,6 +764,8 @@ export default function DetailDrawer({
                   job={job}
                   t={t}
                   previewKey={previewKey}
+                  candidateId={candidateId}
+                  onJobChanged={refreshJob}
                   emptyCta={<StageEmptyCta agentKey="clara" runner={runner} />}
                   paneAction={<StagePaneAction agentKey="clara" runner={runner} />}
                 />
@@ -652,7 +776,12 @@ export default function DetailDrawer({
 
         {job && (
           <div className="p-2.5 border-t-2 border-ink-700 font-mono text-[11px] text-slate-600">
-            job #{job.id} · {t('detail.created')} {formatHKDateTime(job.created_at)} HKT
+            job #{job.id}
+            {job.posted_at
+              ? ` · ${t('detail.posted')} ${formatHKDateTime(job.posted_at)} HKT`
+              : ''}
+            {' · '}
+            {t('detail.created')} {formatHKDateTime(job.created_at)} HKT
           </div>
         )}
       </aside>

@@ -112,6 +112,7 @@
     "transferable": "可遷移優勢",
     "advisory": "職涯建議",
     "jdSnippet": "JD 摘要",
+    "jdFull": "完整職位描述",
     "openPosting": "開啟原始職缺",
     "posted": "發佈（香港時間）",
     "status": "狀態",
@@ -140,7 +141,8 @@
       "cv": "CV",
       "typ": "TYP",
       "fail": "失敗",
-      "ready": "就緒"
+      "ready": "就緒",
+      "followUp": "待跟進"
     }
   },
   "detail": {
@@ -156,6 +158,7 @@
       "cv": "申請文件"
     },
     "created": "建立於",
+    "posted": "刊登於",
     "jobNotFound": "找不到職缺",
     "loading": "載入中…",
     "noDossier": "尚無背調報告 — 執行 Dana 來調查此雇主。",
@@ -174,6 +177,15 @@
     "docsList": "文件清單",
     "rerunThisFile": "重跑此檔",
     "appReady": "申請就緒",
+    "sendTelegram": "傳送至 Telegram",
+    "sendTelegramHint": "把 CV、申請清單、背調報告傳送到你的 Telegram bot",
+    "sendTelegramInfo": "傳送職缺資訊至 Telegram",
+    "sendTelegramInfoHint": "把職缺基本資料和來源連結傳送到 Telegram",
+    "telegramInfoSent": "職缺資訊已傳送至 Telegram ✅",
+    "sendNow": "立即傳送",
+    "sending": "傳送中…",
+    "telegramSent": "已傳送 {{sent}} 份，失敗 {{failed}} 份，略過 {{skipped}} 份",
+    "telegramNotConfigured": "Telegram 未設定 — 請在 .env 填 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID",
     "sections": {
       "techStack": "技術棧",
       "culture": "工程文化",
@@ -294,8 +306,31 @@
       "howTo": [
         "Leo 必須已產出履歷（cv_status = MATERIALS_GENERATED）。",
         "可指定單一公司或職缺 id。",
-        "按「執行 Clara」— 她會蓋 Application_Checklist.md 並翻轉 application_ready。"
+        "按「執行 Clara」— 她會蓋 Application_Checklist.md 並翻轉 application_ready。",
+        "你遞交後，到「申請包」標記已申請／等候／面試。僱主回覆請記在「僱主更新」，方便跟進。"
       ]
+    }
+  },
+  "clara": {
+    "followUpTitle": "Clara — 申請後跟進",
+    "followUpHint": "標記這份申請目前到哪一步。僱主有回覆時記在這裡，方便你跟進。",
+    "followUpStatus": "申請狀態",
+    "followUpNote": "你的備註（入口、遞交日期、招聘聯絡人）",
+    "employerUpdate": "僱主更新",
+    "employerUpdatePlaceholder": "例如：問檔期／出測試／尚未回覆",
+    "followUpNeeded": "尚待跟進 — 回覆僱主或等待回覆。",
+    "statusAt": "狀態更新時間",
+    "employerAt": "僱主備註時間",
+    "saving": "儲存中…",
+    "status": {
+      "READY": "申請包就緒 — 尚未遞交",
+      "APPLIED": "已申請",
+      "AWAITING": "等候僱主",
+      "EMPLOYER_UPDATE": "僱主已回覆 — 請處理",
+      "INTERVIEW": "面試",
+      "OFFER": "錄取",
+      "REJECTED": "不錄取",
+      "WITHDRAWN": "已撤回"
     }
   },
   "backend": {
@@ -374,6 +409,8 @@
     "fields": {
       "id": "設定檔 id",
       "name": "姓名",
+      "headline": "職稱／Headline",
+      "summary": "簡介",
       "location": "所在地",
       "email": "電郵",
       "phone": "電話",
@@ -454,9 +491,14 @@
     "pdfNote": "支援 PDF、TXT、MD、JSON、DOCX。LinkedIn 之後仍可上傳 CV。",
     "linkedinImport": "從 LinkedIn 更新",
     "linkedinParsing": "查詢中…",
-    "linkedinImported": "✓ 已用 LinkedIn 建立基本檔。之後仍可用 Milo 上傳 CV 補詳情。",
+    "linkedinImported": "✓ 已用 LinkedIn MCP 填入檔案。之後仍可用 Milo 上傳 CV 補詳情。",
+    "linkedinParsed": "✓ 已用公開頁文字填入（MCP 沒有完整檔案）。請到經歷／學歷分頁查看。",
     "linkedinSkeleton": "✓ 已儲存用戶名。公開頁讀不到內容 — 請用 Milo 上傳 CV 填經歷。",
-    "linkedinHint": "公開用戶名或 linkedin.com/in/… 網址。不會登入 LinkedIn。之後仍可匯入 CV。",
+    "linkedinHint": "可貼 linkedin.com/in/用戶名、手機 ?profileId= / ACoAA 連結，或 lnkd.in/…。由 Jobhunter 代理自行啟動 LinkedIn MCP（不是 Cursor）。",
+    "mcpWhere": "連接位置：{{where}}",
+    "mcpHow": "用法：{{how}}",
+    "mcpSession": "工作階段：{{session}}",
+    "mcpFiles": "寫入設定檔 {{profile}}；MCP 快取 {{cache}}",
     "attach": "附加檔案",
     "attachHint": "PDF / TXT / MD / JSON / DOCX · 每檔最多 5MB · 每次最多 3 個",
     "removeFile": "移除",

@@ -22,7 +22,7 @@ function CvBadge({ status }) {
   const m = map[status]
   if (!m) return null
   return (
-    <span className="font-mono text-[11px] px-1.5 py-0.5 border" style={{ color: m.c, borderColor: m.c }}>
+    <span className="font-mono text-[11px] px-1.5 py-0.5 border shrink-0" style={{ color: m.c, borderColor: m.c }}>
       {m.t}
     </span>
   )
@@ -72,10 +72,10 @@ export default function JobCard({ job, dossier, onClick }) {
         )}
       </div>
 
-      <div className="flex items-center gap-2 mt-2">
+      <div className="flex flex-wrap items-center gap-1.5 mt-2 min-w-0">
         {brief?.vetting_verdict && (
           <span
-            className="font-mono text-[11px] px-1.5 py-0.5 border"
+            className="font-mono text-[11px] px-1.5 py-0.5 border shrink-0"
             style={{
               color: brief.vetting_verdict === 'PROCEED' ? '#10b981' : '#f43f5e',
               borderColor: brief.vetting_verdict === 'PROCEED' ? '#10b981' : '#f43f5e',
@@ -86,17 +86,24 @@ export default function JobCard({ job, dossier, onClick }) {
         )}
         <CvBadge status={job.cv_status} />
         {job.application_ready && (
-          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-rose-retro border-rose-retro">
-            {t('job.badges.ready')}
+          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-rose-retro border-rose-retro shrink-0 max-w-full">
+            {job.application_status && job.application_status !== 'READY'
+              ? t(`clara.status.${job.application_status}`, { defaultValue: job.application_status })
+              : t('job.badges.ready')}
+          </span>
+        )}
+        {job.follow_up_needed && (
+          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-amber-retro border-amber-retro shrink-0">
+            {t('job.badges.followUp')}
           </span>
         )}
         {job.expired && (
-          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-slate-500 border-slate-600 line-through">
+          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-slate-500 border-slate-600 line-through shrink-0">
             {t('job.expired')}
           </span>
         )}
         {job.unconsiderable && (
-          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-rose-retro border-rose-retro">
+          <span className="font-mono text-[11px] px-1.5 py-0.5 border text-rose-retro border-rose-retro shrink-0">
             {t('job.unconsiderable')}
           </span>
         )}
@@ -106,7 +113,7 @@ export default function JobCard({ job, dossier, onClick }) {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="ml-auto text-slate-500 hover:text-cyan-retro"
+            className="text-slate-500 hover:text-cyan-retro shrink-0"
             title={t('job.openPosting')}
           >
             <ExternalLink size={14} />
@@ -116,7 +123,9 @@ export default function JobCard({ job, dossier, onClick }) {
 
       <div className="flex items-center gap-1 mt-2 font-mono text-[11px] text-slate-500">
         <Clock size={12} />
-        <span title={t('job.posted')}>{formatHKDateTime(job.created_at)}</span>
+        <span title={t('job.posted')}>
+          {formatHKDateTime(job.posted_at || job.created_at)}
+        </span>
         <span className="text-slate-600">HKT</span>
       </div>
     </button>

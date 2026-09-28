@@ -15,12 +15,16 @@ export function ChipInput({ values = [], onChange, placeholder, accent = '#06b6d
   return (
     <div>
       <div className="flex flex-wrap gap-1.5 mb-1.5">
-        {values.map((v) => (
-          <span key={v} className="font-mono text-[12px] px-2 py-0.5 border flex items-center gap-1" style={{ color: accent, borderColor: accent }}>
-            {v}
+        {values.map((v) => {
+          const label = typeof v === 'string' ? v : String(v?.name || v?.label || '')
+          if (!label || label === '[object Object]') return null
+          return (
+          <span key={label} className="font-mono text-[12px] px-2 py-0.5 border flex items-center gap-1" style={{ color: accent, borderColor: accent }}>
+            {label}
             <button onClick={() => onChange(values.filter((x) => x !== v))} className="opacity-60 hover:opacity-100"><X size={11} /></button>
           </span>
-        ))}
+          )
+        })}
         {values.length === 0 && <span className="font-mono text-[12px] text-slate-600">—</span>}
       </div>
       <div className="flex gap-1.5">

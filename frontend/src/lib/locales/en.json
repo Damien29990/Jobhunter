@@ -111,6 +111,7 @@
     "transferable": "TRANSFERABLE STRENGTHS",
     "advisory": "CAREER ADVISORY",
     "jdSnippet": "JD SNIPPET",
+    "jdFull": "FULL JOB DESCRIPTION",
     "openPosting": "Open original posting",
     "posted": "Posted (Hong Kong time)",
     "status": "Status",
@@ -139,7 +140,8 @@
       "cv": "CV",
       "typ": "TYP",
       "fail": "FAIL",
-      "ready": "READY"
+      "ready": "READY",
+      "followUp": "FOLLOW UP"
     }
   },
   "detail": {
@@ -154,7 +156,8 @@
       "pack": "Application Pack",
       "cv": "Application docs"
     },
-    "created": "created",
+    "created": "ingested",
+    "posted": "published",
     "jobNotFound": "job not found",
     "loading": "loading…",
     "noDossier": "No dossier yet — run Dana to investigate this employer.",
@@ -173,6 +176,15 @@
     "docsList": "Documents",
     "rerunThisFile": "Re-run this file",
     "appReady": "Application Ready",
+    "sendTelegram": "Send to Telegram",
+    "sendTelegramHint": "Send CV, application checklist, and dossier to your Telegram bot",
+    "sendTelegramInfo": "Send Job Info to Telegram",
+    "sendTelegramInfoHint": "Send this job's basic info and source link to Telegram",
+    "telegramInfoSent": "Job info sent to Telegram ✅",
+    "sendNow": "Send Now",
+    "sending": "Sending…",
+    "telegramSent": "Sent {{sent}}, failed {{failed}}, skipped {{skipped}}",
+    "telegramNotConfigured": "Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env",
     "sections": {
       "techStack": "TECH STACK",
       "culture": "ENGINEERING CULTURE",
@@ -293,8 +305,31 @@
       "howTo": [
         "Leo must have produced a CV (cv_status = MATERIALS_GENERATED).",
         "Optionally target one company or job id.",
-        "Click \"Run Clara\" — she stamps Application_Checklist.md and flips application_ready."
+        "Click \"Run Clara\" — she stamps Application_Checklist.md and flips application_ready.",
+        "After you submit, open Application Pack and mark Applied / Awaiting / Interview. Paste employer replies in Employer update so Clara can keep the chase."
       ]
+    }
+  },
+  "clara": {
+    "followUpTitle": "Clara — after you apply",
+    "followUpHint": "Mark where this application is. If the employer writes back, save it here so you can follow up.",
+    "followUpStatus": "Application status",
+    "followUpNote": "Your note (portal, date submitted, recruiter name)",
+    "employerUpdate": "Employer update",
+    "employerUpdatePlaceholder": "e.g. asked for availability / sent test / no reply yet",
+    "followUpNeeded": "Open follow-up — reply or wait on the employer.",
+    "statusAt": "Status updated",
+    "employerAt": "Employer note saved",
+    "saving": "Saving…",
+    "status": {
+      "READY": "Pack ready — not submitted",
+      "APPLIED": "Applied",
+      "AWAITING": "Waiting on employer",
+      "EMPLOYER_UPDATE": "Employer replied — act",
+      "INTERVIEW": "Interview",
+      "OFFER": "Offer",
+      "REJECTED": "Rejected",
+      "WITHDRAWN": "Withdrawn"
     }
   },
   "backend": {
@@ -373,6 +408,8 @@
     "fields": {
       "id": "Profile id",
       "name": "Name",
+      "headline": "Headline",
+      "summary": "About",
       "location": "Location",
       "email": "Email",
       "phone": "Phone",
@@ -453,9 +490,14 @@
     "pdfNote": "PDF, TXT, MD, JSON, or DOCX. You can still upload a CV after LinkedIn.",
     "linkedinImport": "Update from LinkedIn",
     "linkedinParsing": "Looking up…",
-    "linkedinImported": "✓ LinkedIn used to seed the profile. Upload a CV anytime to add detail.",
+    "linkedinImported": "✓ LinkedIn MCP filled the profile. Upload a CV anytime to add detail.",
+    "linkedinParsed": "✓ Public LinkedIn text was used (MCP did not return a full profile). Check Experience / Education tabs.",
     "linkedinSkeleton": "✓ Username saved. LinkedIn page was not public — upload a CV with Milo to fill experience.",
-    "linkedinHint": "Public username or linkedin.com/in/… URL. Does not log in. CV import still works afterwards.",
+    "linkedinHint": "Paste linkedin.com/in/username, a mobile ?profileId= / ACoAA link, or lnkd.in/…. Jobhunter starts LinkedIn MCP itself (not Cursor).",
+    "mcpWhere": "Connected in: {{where}}",
+    "mcpHow": "How it is used: {{how}}",
+    "mcpSession": "Session: {{session}}",
+    "mcpFiles": "Writes profile {{profile}}; MCP cache {{cache}}",
     "attach": "Attach file",
     "attachHint": "PDF / TXT / MD / JSON / DOCX · max 5MB · up to 3 files",
     "removeFile": "Remove",

@@ -52,3 +52,48 @@ def notify_job_update(
     except Exception as exc:
         log_activity(agent_name, f"Telegram notify error: {exc}", level="WARN")
         return False
+
+
+def notify_application_package(
+    *,
+    company: str = "",
+    title: str = "",
+    url: str = "",
+    extra: str = "",
+    cv_pdf_path: str = "",
+    cover_letter_path: str = "",
+    checklist_path: str = "",
+    dossier_path: str = "",
+) -> bool:
+    """Send Clara's pack the same way as the dashboard Telegram buttons."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_PROJECT_ROOT / ".env")
+        from telegram_notifier import send_job_documents, send_job_update
+        send_job_update(
+            "Clara",
+            "Application pack",
+            company=company,
+            title=title,
+            url=url,
+            extra=extra,
+        )
+        result = send_job_documents(
+            cv_pdf_path=cv_pdf_path,
+            cover_letter_path=cover_letter_path,
+            checklist_path=checklist_path,
+            dossier_path=dossier_path,
+            company=company,
+            title=title,
+        )
+        if not result.get("configured"):
+            log_activity("Clara", "Telegram pack skipped: bot not configured", level="WARN")
+            return False
+        log_activity(
+            "Clara",
+            f"Telegram pack sent={result.get('sent')} failed={result.get('failed')}",
+        )
+        return bool(result.get("sent"))
+    except Exception as exc:
+        log_activity("Clara", f"Telegram pack error: {exc}", level="WARN")
+        return False

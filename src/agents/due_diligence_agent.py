@@ -47,6 +47,7 @@ from system_one import should_rerun_dossier  # noqa: E402
 
 from listing_filters import (  # noqa: E402
     listing_check_verdict,
+    listing_full_text,
     listing_text_supports_title,
     listing_url_problem,
     normalize_listing_url,
@@ -727,6 +728,7 @@ class DueDiligenceAgent:
         tavily_api_key: Optional[str] = None,
         db_path: Optional[str] = None,
         backend: Optional[str] = None,
+        profile_path: Path = DEFAULT_PROFILE_PATH,
     ):
         self.backend = (backend or os.environ.get("DUE_DILIGENCE_BACKEND") or "").strip().lower()
         if self.backend not in {"official", "tavily", ""}:
@@ -743,7 +745,8 @@ class DueDiligenceAgent:
             OpenAI(api_key=deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
         )
         self.db_manager = JobDBManager(db_path=db_path) if db_path else JobDBManager()
-        self.candidate_profile = load_master_profile()
+        self.profile_path = Path(profile_path)
+        self.candidate_profile = load_master_profile(self.profile_path)
         self._http = httpx.Client(
             headers={"User-Agent": HTTP_USER_AGENT},
             timeout=20.0,
@@ -1013,7 +1016,7 @@ Example JSON shape:
 
 Candidate profile:
 {profile_brief(self.candidate_profile)}
-{milo_readme_prompt_block(DEFAULT_PROFILE_PATH)}
+{milo_readme_prompt_block(self.profile_path)}
 Research backend: {self.backend}
 """
         user_prompt = (
@@ -1143,7 +1146,7 @@ Research backend: {self.backend}
         """Recover real employer names from listing pages and drop placeholder dossiers."""
         recovered: List[str] = []
         for job in self.db_manager.list_jobs_missing_employer(min_score=min_score):
-            resolved = resolve_employer_name(job["job_url"], job["jd_snippet"])
+            resolved = resolve_employer_name(job["job_url"], listing_full_text(job))
             if not resolved:
                 resolved = self._extract_employer_llm(job)
             if not resolved:
@@ -1160,7 +1163,7 @@ Research backend: {self.backend}
         try:
             page = fetch_page_text(job["job_url"])
         except Exception:
-            page = job.get("jd_snippet") or ""
+            page = listing_full_text(job)
         text = html_to_text(page) if "<" in page else page
         response = self.client.chat.completions.create(
             model=self.chat_model,
@@ -1226,7 +1229,7 @@ Research backend: {self.backend}
                     f"Score gate bypassed for job #{job_id} (composite={score})",
                 )
             if not is_usable_company_name(company_name):
-                resolved = resolve_employer_name(job["job_url"], job["jd_snippet"])
+                resolved = resolve_employer_name(job["job_url"], listing_full_text(job))
                 if not resolved:
                     resolved = self._extract_employer_llm(job)
                 if not resolved:
@@ -1239,7 +1242,7 @@ Research backend: {self.backend}
                 company_name,
                 job_titles=job["job_title"],
                 job_urls=job["job_url"],
-                jd_snippets=job["jd_snippet"],
+                jd_snippets=listing_full_text(job),
                 force_refresh=True,
                 min_score=min_score,
                 seed_jobs=[job],
@@ -1319,6 +1322,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip the score gate — research all jobs regardless of match_score",
     )
+    parser.add_argument(
+        "--profile",
+        default=str(DEFAULT_PROFILE_PATH),
+        help="Candidate JSON: config/master_profile.json or config/profiles/{id}.json",
+    )
     args = parser.parse_args()
     load_dotenv(PROJECT_ROOT / ".env")
     from env_keys import deepseek_api_key, tavily_api_key
@@ -1336,6 +1344,7 @@ if __name__ == "__main__":
         deepseek_api_key=deepseek_key,
         tavily_api_key=tavily_key or None,
         backend=backend,
+        profile_path=Path(args.profile),
     )
     agent.run_pipeline(
         min_score=args.min_score,

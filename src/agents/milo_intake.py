@@ -3,8 +3,8 @@
 Milo does NOT restrict Rex with hard filters. Instead, Milo:
 1. Accepts a CV (text/PDF) and extracts structured profile fields via Ollama.
 2. Lets the user add info via an interactive chatbot (Ollama-powered).
-3. Compresses chat into config/milo_context.md every 20 live messages
-   (CV + chat → skill-like README other agents read).
+3. Compresses chat into the per-candidate README every 20 live messages
+   (master → config/milo_context.md; others → config/profiles/{id}_milo.md).
 4. Extracts ProfileAcceptanceContext (PAC) — soft guidance for Rex.
 
 # Ref: workspace rule — Pydantic v2, 禁用 Any; Asia/Hong_Kong ISO 8601.
@@ -343,12 +343,16 @@ class MiloIntakeAgent:
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH, profile_path: Path = DEFAULT_PROFILE_PATH):
         self.db_manager = JobDBManager(db_path=db_path)
-        self.profile_path = profile_path
+        self.profile_path = Path(profile_path)
         self.profile: dict = {}
         self.chat_history: list[dict] = []
         self.milo_summary: str = ""
         self.pac: Optional[ProfileAcceptanceContext] = None
         self._load_profile()
+        person = self.db_manager.upsert_person_for_profile(self.profile_path, self.profile)
+        self.person_id = person.id
+        self.candidate_id = person.tag
+        self.chat_history = self.db_manager.load_chat_history(self.person_id)
         self.readme_path = milo_readme_path_for(self.profile_path)
 
     def _load_profile(self) -> None:
@@ -357,7 +361,6 @@ class MiloIntakeAgent:
                 self.profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 self.profile = {}
-        self.chat_history = self.db_manager.load_chat_history("default")
 
     def import_cv(self, cv_text: str) -> dict:
         """Import a CV and merge into the profile."""
@@ -384,7 +387,7 @@ class MiloIntakeAgent:
         """
         existing_readme = load_milo_readme(self.profile_path)
         self.chat_history.append({"role": "user", "content": message})
-        self.db_manager.save_chat_message("default", "user", message)
+        self.db_manager.save_chat_message(self.person_id, "user", message, tag=self.candidate_id)
         llm_message = f"{message}\n\n{prompt_extra}".strip() if prompt_extra else message
         result = chat_with_milo(llm_message, self.profile, self.chat_history, existing_readme)
         if not result:
@@ -423,13 +426,14 @@ class MiloIntakeAgent:
         self._save_profile()
 
         self.chat_history.append({"role": "assistant", "content": reply})
-        self.db_manager.save_chat_message("default", "assistant", reply)
+        self.db_manager.save_chat_message(self.person_id, "assistant", reply, tag=self.candidate_id)
         live = live_chat_messages(self.chat_history)
         if should_refresh_readme(len(live)):
             self.milo_summary = compress_chat_history(live, min_messages=1)
             if self.milo_summary and len(live) % CHAT_README_BATCH == 0:
                 self.db_manager.save_chat_message(
-                    "default", "system", f"[COMPRESSED] {self.milo_summary}"
+                    self.person_id, "system", f"[COMPRESSED] {self.milo_summary}",
+                    tag=self.candidate_id,
                 )
             self.refresh_readme(source=f"chat_{len(live)}")
         return {
@@ -474,6 +478,7 @@ class MiloIntakeAgent:
             live_message_count=len(live),
             revision=revision,
             source=source,
+            profile_id=self.candidate_id,
         )
         path = write_milo_readme(self.profile_path, markdown)
         self.profile["milo_readme_path"] = str(path)

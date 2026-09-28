@@ -31,8 +31,9 @@ _HK_HINTS = (
 )
 _ROLE_HINTS = (
     "engineer", "developer", "analyst", "architect", "scientist",
-    "manager", "specialist", "consultant", "lead", "sre", "devops",
-    "programmer", "officer", "intern", "工程師", "開發", "分析", "架構",
+    "researcher", "data science", "manager", "specialist", "consultant",
+    "lead", "sre", "devops",
+    "programmer", "officer", "intern", "工程師", "開發", "分析", "架構", "研究員",
 )
 
 

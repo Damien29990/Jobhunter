@@ -1,8 +1,8 @@
-"""Seed a basic master profile from a public LinkedIn vanity username.
+"""Seed a basic master profile from a LinkedIn vanity username or share URL.
 
-Does not log into LinkedIn. Uses Tavily public search/extract when a key is
-set; otherwise writes a skeleton (name from slug + LinkedIn URL) so Milo CV
-import can fill the rest.
+Jobhunter starts LinkedIn MCP itself (uvx linkedin-api-mcp). If that has no
+session, Tavily public extract is used; otherwise a skeleton is stored so
+Milo CV import can fill the rest.
 
 # Ref: Milo intake — username-only bootstrap, CV merge still wins on full lists
 """
@@ -30,6 +30,7 @@ from contact_links import (  # noqa: E402
     linkedin_handle,
     linkedin_profile_url,
     name_from_linkedin_handle,
+    parse_linkedin_profile_ref,
 )
 from env_keys import tavily_api_key  # noqa: E402
 
@@ -50,9 +51,10 @@ class LinkedInBootstrapResult(BaseModel):
 
     handle: str
     url: str
-    source: Literal["parsed", "skeleton"]
+    source: Literal["mcp", "parsed", "skeleton"]
     parsed: dict = Field(default_factory=dict)
     public_text_chars: int = 0
+    mcp_payload: dict = Field(default_factory=dict)
 
 
 def skeleton_profile(handle: str, url: str) -> dict:
@@ -162,11 +164,40 @@ def parse_linkedin_public_text(text: str, handle: str, url: str) -> Optional[dic
 
 
 def bootstrap_from_linkedin(raw: str) -> LinkedInBootstrapResult:
-    """Validate handle, fetch public text, parse or fall back to skeleton."""
-    if not is_valid_linkedin_username(raw):
-        raise ValueError("Enter a valid LinkedIn username or https://www.linkedin.com/in/… URL")
-    handle = linkedin_handle(raw)
-    url = linkedin_profile_url(raw)
+    """Validate handle, prefer LinkedIn MCP, then Tavily, else skeleton."""
+    ref = parse_linkedin_profile_ref(raw)
+    if ref is None or not is_valid_linkedin_username(raw):
+        raise ValueError(
+            "Enter a LinkedIn /in/ URL, ?profileId= share link, lnkd.in short link, or username"
+        )
+    handle = ref.handle
+    url = ref.url
+    try:
+        from linkedin_mcp_client import fetch_linkedin_mcp_payload, master_profile_from_mcp
+
+        mcp_payload = fetch_linkedin_mcp_payload(ref)
+    except Exception:
+        mcp_payload = None
+    if mcp_payload:
+        mapped = master_profile_from_mcp(mcp_payload, ref)
+        basics = mapped.get("basics") if isinstance(mapped.get("basics"), dict) else {}
+        has_body = bool(
+            mapped.get("experience")
+            or mapped.get("education")
+            or str(basics.get("summary") or "").strip()
+            or str(basics.get("headline") or "").strip()
+            or mcp_payload.get("public_id")
+            or mcp_payload.get("name")
+        )
+        if has_body:
+            return LinkedInBootstrapResult(
+                handle=handle,
+                url=url,
+                source="mcp",
+                parsed=mapped,
+                public_text_chars=0,
+                mcp_payload=mcp_payload,
+            )
     text = fetch_linkedin_public_text(url, handle)
     parsed = parse_linkedin_public_text(text, handle, url) if text else None
     if parsed:
@@ -250,4 +281,104 @@ def merge_fill_empty(existing: dict, parsed: dict) -> dict:
             if cat not in existing_skills or _is_empty_profile_value(existing_skills.get(cat)):
                 existing_skills[cat] = tags
         out["technical_skills"] = existing_skills
+    return normalize_profile_languages(out)
+
+
+def _language_item(raw: object) -> Optional[dict]:
+    if isinstance(raw, dict):
+        name = str(raw.get("name") or raw.get("language") or "").strip()
+        if name.lower() in {"", "[object object]"}:
+            return None
+        level = str(raw.get("proficiency") or raw.get("level") or "").strip()
+        return {"name": name, "proficiency": level or None}
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text or text.lower() == "[object object]":
+            return None
+        if text.endswith(")") and "(" in text:
+            name, rest = text.rsplit("(", 1)
+            return {"name": name.strip(), "proficiency": rest[:-1].strip() or None}
+        return {"name": text, "proficiency": None}
+    return None
+
+
+def normalize_profile_languages(profile: dict) -> dict:
+    """Keep top-level LanguageItem rows and string chips in basics.languages.
+
+    # Ref: Profile.languages vs basics.languages list[str]
+    """
+    out = dict(profile or {})
+    basics = dict(out.get("basics") or {})
+    items: list[dict] = []
+    seen: set[str] = set()
+    for source in (out.get("languages"), basics.get("languages")):
+        if not isinstance(source, list):
+            continue
+        for raw in source:
+            item = _language_item(raw)
+            if not item:
+                continue
+            key = str(item["name"]).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+    labels = [
+        f"{item['name']} ({item['proficiency']})" if item.get("proficiency") else str(item["name"])
+        for item in items
+    ]
+    out["languages"] = items
+    basics["languages"] = labels
+    out["basics"] = basics
     return out
+
+
+def merge_linkedin_mcp(existing: dict, parsed: dict) -> dict:
+    """Write MCP fields into the editor JSON, including blank experience.
+
+    fill_empty skipped name/location that were already set from the vanity slug,
+    so a successful get_profile looked like a no-op in the dashboard.
+    # Ref: POST /api/candidates/import-linkedin source=mcp
+    """
+    out = merge_fill_empty(existing, parsed)
+    incoming_basics = parsed.get("basics") if isinstance(parsed.get("basics"), dict) else {}
+    basics = dict(out.get("basics") or {})
+    incoming_name = str(incoming_basics.get("name") or "").strip()
+    if incoming_name and not is_placeholder_profile_name(incoming_name):
+        basics["name"] = incoming_name
+    for key in ("headline", "summary", "linkedin", "location"):
+        value = incoming_basics.get(key)
+        if not _is_empty_profile_value(value):
+            basics[key] = value
+    roles = incoming_basics.get("target_roles")
+    if isinstance(roles, list) and roles:
+        current_roles = basics.get("target_roles")
+        if _is_empty_profile_value(current_roles):
+            basics["target_roles"] = roles
+    out["basics"] = basics
+    for key in (
+        "education",
+        "experience",
+        "projects",
+        "certifications",
+        "languages",
+        "awards",
+    ):
+        incoming = parsed.get(key)
+        current = out.get(key)
+        if not incoming:
+            continue
+        if _is_empty_profile_value(current) or (
+            isinstance(current, list)
+            and isinstance(incoming, list)
+            and len(incoming) > len(current)
+        ):
+            out[key] = incoming
+    skills = parsed.get("technical_skills")
+    if isinstance(skills, dict) and skills:
+        existing_skills = dict(out.get("technical_skills") or {})
+        for cat, tags in skills.items():
+            if cat not in existing_skills or _is_empty_profile_value(existing_skills.get(cat)):
+                existing_skills[cat] = tags
+        out["technical_skills"] = existing_skills
+    return normalize_profile_languages(out)
