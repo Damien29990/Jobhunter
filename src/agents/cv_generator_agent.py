@@ -48,6 +48,12 @@ from cv_filenames import cover_letter_filename, cv_download_filename  # noqa: E4
 from cv_experience import iter_experience_roles  # noqa: E402
 from contact_links import contact_plain_lines, contact_typst_markup  # noqa: E402
 from cv_projects import select_and_order_cv_projects  # noqa: E402
+from obsidian_vault import (  # noqa: E402
+    export_obsidian_foundation,
+    render_cover_letter_readme,
+    render_cv_readme,
+    write_job_readmes,
+)
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -472,13 +478,27 @@ class CVGeneratorAgent:
                 "PDF compilation will be skipped. Install: winget install --id Typst.Typst"
             )
 
-    def list_vetted_jobs(self, min_score: int = MIN_MATCH_SCORE) -> List[dict]:
+    def list_vetted_jobs(self, min_score: int = MIN_MATCH_SCORE, force: bool = False) -> List[dict]:
         """Jobs with match_score >= min_score whose dossier verdict is PROCEED.
 
+        Finished CV+letter packs are skipped unless force=True.
         # Ref: Agent 3 gate — high match AND vetting_verdict = PROCEED
         """
-        cursor = self.db_manager.db.execute(
+        skip_done = ""
+        params: tuple = (min_score, PROCEED_VERDICT)
+        if not force:
+            skip_done = """
+              AND NOT (
+                    COALESCE(j.cv_status, '') IN (?, ?)
+                    AND (
+                      COALESCE(j.cover_letter_typ_path, '') != ''
+                      OR COALESCE(j.cover_letter_pdf_path, '') != ''
+                    )
+                  )
             """
+            params = (min_score, PROCEED_VERDICT, STATUS_GENERATED, STATUS_RENDERED)
+        cursor = self.db_manager.db.execute(
+            f"""
             SELECT
                 j.id, j.job_url, j.job_title, j.company_name,
                 COALESCE(j.jd_full, j.jd_snippet) AS jd_snippet, j.match_score, j.recommendation_reason,
@@ -487,17 +507,12 @@ class CVGeneratorAgent:
             LEFT JOIN company_dossiers d
               ON LOWER(TRIM(j.company_name)) = LOWER(TRIM(d.company_name))
             WHERE j.match_score >= ?
+              AND COALESCE(j.expired, 0) = 0
               AND COALESCE(d.vetting_verdict, '') = ?
-              AND NOT (
-                    COALESCE(j.cv_status, '') IN (?, ?)
-                    AND (
-                      COALESCE(j.cover_letter_typ_path, '') != ''
-                      OR COALESCE(j.cover_letter_pdf_path, '') != ''
-                    )
-                  )
+              {skip_done}
             ORDER BY j.match_score DESC
             """,
-            (min_score, PROCEED_VERDICT, STATUS_GENERATED, STATUS_RENDERED),
+            params,
         )
         rows: List[dict] = []
         for row in cursor.fetchall():
@@ -717,6 +732,59 @@ JSON Schema:
                 )
         return result
 
+    def _write_obsidian_readmes(
+        self,
+        payload: TailoredCVPayload,
+        *,
+        write_cv: bool,
+        write_letter: bool,
+    ) -> dict:
+        """Write CV and cover letter Markdown from the payload already in memory."""
+        basics = self.master_profile.get("basics") or {}
+        name = str(basics.get("name") or "Candidate")
+        contact = contact_plain_lines(basics)
+        letter_date = datetime.now(HK_TZ).strftime("%d %B %Y")
+        cv_body = ""
+        letter_body = ""
+        if write_cv:
+            cv_body = render_cv_readme(
+                candidate_name=name,
+                contact_lines=contact,
+                target_company=payload.target_company,
+                target_role=payload.target_role,
+                professional_summary=payload.professional_summary,
+                prioritized_skills=payload.prioritized_skills,
+                experience=[item.model_dump() for item in payload.experience],
+                projects=[item.model_dump() for item in payload.projects],
+                certifications=payload.certifications,
+                education=self.master_profile.get("education") or [],
+                languages=language_labels(self.master_profile),
+                awards=award_labels(self.master_profile),
+            )
+        if write_letter and payload.cover_letter.paragraphs:
+            letter = payload.cover_letter
+            letter_body = render_cover_letter_readme(
+                candidate_name=name,
+                contact_lines=contact,
+                target_company=payload.target_company,
+                target_role=payload.target_role,
+                letter_date=letter_date,
+                greeting=letter.greeting,
+                paragraphs=letter.paragraphs,
+                closing=letter.closing,
+            )
+        written = write_job_readmes(
+            company=payload.target_company,
+            title=payload.target_role,
+            cv_body=cv_body,
+            cover_letter_body=letter_body,
+        )
+        if written.get("cv_md_path"):
+            log_activity("Leo", f"CV Markdown written: {written['cv_md_path']}")
+        if written.get("cover_letter_md_path"):
+            log_activity("Leo", f"Cover letter Markdown written: {written['cover_letter_md_path']}")
+        return written
+
     def _update_status(
         self,
         job_id: int,
@@ -769,6 +837,11 @@ JSON Schema:
 
         payload = self.tailor_cv(job, dossier_summary=self._dossier_summary(job))
         if not payload:
+            log_activity(
+                "Leo",
+                f"DeepSeek tailor failed for {company} — {title}",
+                level="ERROR",
+            )
             if write_cv:
                 self._update_status(job["id"], STATUS_FAILED)
             return None
@@ -837,6 +910,11 @@ JSON Schema:
             cover_paths = self._write_cover_letter(
                 last_payload, out_dir, title, user_name
             )
+        obsidian_paths = self._write_obsidian_readmes(
+            last_payload,
+            write_cv=write_cv,
+            write_letter=write_letter,
+        )
         self._update_status(
             job["id"],
             status=status,
@@ -864,6 +942,8 @@ JSON Schema:
             "pdf_path": str(pdf_path) if write_cv and compiled else None,
             "cover_letter_typ_path": cover_paths.get("typ_path"),
             "cover_letter_pdf_path": cover_paths.get("pdf_path"),
+            "cv_md_path": obsidian_paths.get("cv_md_path"),
+            "cover_letter_md_path": obsidian_paths.get("cover_letter_md_path"),
             "status": status,
         }
 
@@ -876,6 +956,13 @@ JSON Schema:
         document: str = "all",
     ) -> int:
         """Generate tailored CVs for all vetted high-match jobs."""
+        export_obsidian_foundation()
+        log_activity(
+            "Leo",
+            f"Agent started (min_score={min_score}"
+            f"{f', job_id={job_id}' if job_id is not None else ''}"
+            f"{', force' if force else ''})",
+        )
         kind = (document or "all").strip().lower()
         docs: Optional[frozenset[str]]
         if kind == "cv":
@@ -899,19 +986,24 @@ JSON Schema:
                         "Leo",
                         f"Score gate bypassed for job #{job_id} (composite={score})",
                     )
+            else:
+                log_activity("Leo", f"Job #{job_id} not found in SQLite", level="WARN")
         else:
-            jobs = self.list_vetted_jobs(min_score=min_score)
+            jobs = self.list_vetted_jobs(min_score=min_score, force=force)
         if company:
             key = company.strip().lower()
             jobs = [j for j in jobs if key in (j["company_name"] or "").lower()]
         if not jobs:
-            print(
-                "ℹ️  No new vetted jobs. Need match_score >= "
+            msg = (
+                "No new vetted jobs. Need match_score >= "
                 f"{min_score} and verdict PROCEED, still missing a CV or cover letter "
-                "(or pass --job-id to generate for one listing)."
+                "(or pass --job-id / --force)."
             )
+            print(f"ℹ️  {msg}")
+            log_activity("Leo", msg, level="WARN")
             return 0
         print(f"📋 {len(jobs)} vetted job(s) queued for CV generation.")
+        log_activity("Leo", f"{len(jobs)} vetted job(s) queued for CV generation")
         catalog = list_canvas_templates()
         if catalog:
             names = ", ".join(f"{t.id} ({t.name})" for t in catalog)

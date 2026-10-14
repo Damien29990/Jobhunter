@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,9 @@ MAX_TAIL_LINES = 40
 TOKENS_RE = re.compile(
     r"TOKENS agent=\S+ prompt=(\d+) completion=(\d+) total=(\d+)"
 )
+TAVILY_RE = re.compile(
+    r"TAVILY agent=\S+ calls=(\d+) credits=(\d+)"
+)
 
 # Unified cross-agent log — append-only plain text, one line per activity.
 # Format: ``[<HK ISO 8601>] [<SOURCE>] [<LEVEL>] <message>`` where
@@ -58,7 +62,7 @@ TOKENS_RE = re.compile(
 # The write helper itself lives in src/agents/activity_logger.py so agents and
 # the runner share a single thread-safe append path. LOG_FILE is re-exported
 # here for backward compatibility with server.py (which imports it from us).
-from activity_logger import LOG_FILE, log_system  # noqa: E402
+from activity_logger import LOG_FILE, log_activity, log_system  # noqa: E402
 
 
 def _parse_tokens_line(line: str) -> Optional[tuple[int, int, int]]:
@@ -66,6 +70,13 @@ def _parse_tokens_line(line: str) -> Optional[tuple[int, int, int]]:
     if not match:
         return None
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def _parse_tavily_line(line: str) -> Optional[tuple[int, int]]:
+    match = TAVILY_RE.search(line or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _telemetry_file(agent_key: str) -> Path:
@@ -84,6 +95,10 @@ def _load_telemetry_tokens(agent_key: str) -> dict:
         return {}
     return {
         "prompt_tokens": int(payload.get("prompt_tokens") or 0),
+        "tavily_calls": int(payload.get("tavily_calls") or 0),
+        "tavily_credits_est": int(payload.get("tavily_credits_est") or 0),
+        "tavily_search_calls": int(payload.get("tavily_search_calls") or 0),
+        "tavily_extract_calls": int(payload.get("tavily_extract_calls") or 0),
         "completion_tokens": int(payload.get("completion_tokens") or 0),
         "total_tokens": int(payload.get("total_tokens") or 0),
     }
@@ -101,6 +116,10 @@ class AgentRuntime:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    tavily_calls: int = 0
+    tavily_credits_est: int = 0
+    tavily_search_calls: int = 0
+    tavily_extract_calls: int = 0
     _proc: Optional[subprocess.Popen] = None
     _thread: Optional[threading.Thread] = None
 
@@ -246,7 +265,7 @@ class AgentRunner:
                 cmd += ["--company", req.company]
             if req.min_score is not None:
                 cmd += ["--min-score", str(req.min_score)]
-            if req.job_id is not None and req.force_refresh:
+            if req.job_id is not None:
                 cmd += ["--force"]
         elif agent_key == "milo":
             if req.query:
@@ -271,6 +290,7 @@ class AgentRunner:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env.update(self.person_env(getattr(req, "candidate_id", None)))
+        env["JOBHUNTER_AGENT_RUN_STARTED"] = time.strftime("%Y-%m-%dT%H:%M:%S+08:00")
         # Agents load .env themselves via load_dotenv, but pass through anyway.
         try:
             proc = subprocess.Popen(
@@ -299,6 +319,10 @@ class AgentRunner:
             rt.prompt_tokens = 0
             rt.completion_tokens = 0
             rt.total_tokens = 0
+            rt.tavily_calls = 0
+            rt.tavily_credits_est = 0
+            rt.tavily_search_calls = 0
+            rt.tavily_extract_calls = 0
             rt._proc = proc
         # System event: agent triggered. Agents own their own .txt milestones;
         # the runner owns only SYSTEM lifecycle events.
@@ -333,6 +357,9 @@ class AgentRunner:
                     parsed = _parse_tokens_line(line)
                     if parsed:
                         rt.prompt_tokens, rt.completion_tokens, rt.total_tokens = parsed
+                    tav = _parse_tavily_line(line)
+                    if tav:
+                        rt.tavily_calls, rt.tavily_credits_est = tav
         except Exception as exc:  # pragma: no cover
             with self._lock:
                 rt.tail.append(f"[stream error] {exc}")
@@ -347,11 +374,25 @@ class AgentRunner:
                     rt.prompt_tokens = extra["prompt_tokens"]
                     rt.completion_tokens = extra["completion_tokens"]
                     rt.total_tokens = extra["total_tokens"]
+                if extra.get("tavily_calls") and not rt.tavily_calls:
+                    rt.tavily_calls = extra["tavily_calls"]
+                    rt.tavily_credits_est = extra["tavily_credits_est"]
+                    rt.tavily_search_calls = extra.get("tavily_search_calls", 0)
+                    rt.tavily_extract_calls = extra.get("tavily_extract_calls", 0)
                 rt._proc = None
             log_system(
                 f"{rt.character} exited code {rc}",
                 level="EXIT" if rc == 0 else "ERROR",
             )
+            if rc not in (0, None):
+                snippet = " | ".join(
+                    ln.strip() for ln in list(rt.tail)[-12:] if (ln or "").strip()
+                )[:900]
+                log_activity(
+                    rt.character,
+                    f"Process failed (exit {rc}): {snippet or 'no stdout'}",
+                    level="ERROR",
+                )
             should_follow = (
                 agent_key == "rex"
                 and rc in (0, None)
@@ -403,6 +444,17 @@ class AgentRunner:
                 log_system(f"INGEST follow-up stopped at {key}", level="ERROR")
                 return
         log_system(f"INGEST follow-up finished for job {job_id}", level="EXIT")
+        try:
+            try:
+                from .telegram_notifier import _send_raw
+            except ImportError:
+                from telegram_notifier import _send_raw
+            _send_raw(
+                f"Pasted-link pipeline finished for job #{job_id}.\n"
+                "Dana → Leo → Clara done. Send /apply for the overview."
+            )
+        except Exception:
+            pass
 
     def _wait_agent_idle(self, agent_key: str, timeout_s: float) -> bool:
         deadline = time.time() + timeout_s
@@ -429,6 +481,8 @@ class AgentRunner:
             prompt = rt.prompt_tokens or extra.get("prompt_tokens", 0)
             completion = rt.completion_tokens or extra.get("completion_tokens", 0)
             total = rt.total_tokens or extra.get("total_tokens", 0)
+            tavily_calls = rt.tavily_calls or extra.get("tavily_calls", 0)
+            tavily_credits = rt.tavily_credits_est or extra.get("tavily_credits_est", 0)
             state = rt.state
             message = rt.message
             started_at = rt.started_at
@@ -450,6 +504,10 @@ class AgentRunner:
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
                 "total_tokens": total,
+                "tavily_calls": tavily_calls,
+                "tavily_credits_est": tavily_credits,
+                "tavily_search_calls": extra.get("tavily_search_calls", 0),
+                "tavily_extract_calls": extra.get("tavily_extract_calls", 0),
             }
 
     def status_all(self) -> dict:
@@ -494,6 +552,9 @@ class AgentRunner:
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         env.update(self.person_env(getattr(req, "candidate_id", None)))
+        env["JOBHUNTER_PIPELINE_RUN_ID"] = (
+            time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+        )
         try:
             for key in self.PIPELINE_ORDER:
                 with self._lock:
@@ -515,6 +576,9 @@ class AgentRunner:
                         log_system(f"listing sweep failed: {exc}", level="WARN")
                         self._pipeline.log.append(f"[pipeline] listing check error: {exc}")
                 log_system(f"PIPELINE -> {key}", level="START")
+                env["JOBHUNTER_AGENT_RUN_STARTED"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%S+08:00"
+                )
                 proc = subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
@@ -535,6 +599,8 @@ class AgentRunner:
                     rt.prompt_tokens = 0
                     rt.completion_tokens = 0
                     rt.total_tokens = 0
+                    rt.tavily_calls = 0
+                    rt.tavily_credits_est = 0
                     rt._proc = proc
                 assert proc.stdout is not None
                 for line in proc.stdout:
@@ -545,6 +611,9 @@ class AgentRunner:
                         parsed = _parse_tokens_line(line)
                         if parsed:
                             rt.prompt_tokens, rt.completion_tokens, rt.total_tokens = parsed
+                        tav = _parse_tavily_line(line)
+                        if tav:
+                            rt.tavily_calls, rt.tavily_credits_est = tav
                 rc = proc.wait()
                 with self._lock:
                     rt.state = "FAILED" if rc not in (0, None) else "IDLE"
@@ -692,6 +761,13 @@ def _notify_desk_pipeline_finished(success: bool, error: str = "") -> None:
 
         if not success:
             send_error("Pipeline", error or "Finish Pipeline stopped with a failed agent")
+            try:
+                from .apply_overview import announce_pipeline_finish
+            except ImportError:
+                from apply_overview import announce_pipeline_finish
+            announce_pipeline_finish(
+                success=False, source="desk", error=error, send_telegram=False
+            )
             return
         counts = _funnel_counts()
         send_pipeline_summary(
@@ -700,6 +776,11 @@ def _notify_desk_pipeline_finished(success: bool, error: str = "") -> None:
             cv_generated=counts["cv_generated"],
             application_ready=counts["application_ready"],
         )
+        try:
+            from .apply_overview import announce_pipeline_finish
+        except ImportError:
+            from apply_overview import announce_pipeline_finish
+        announce_pipeline_finish(success=True, source="desk")
     except Exception:
         pass
 

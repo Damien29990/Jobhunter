@@ -45,10 +45,14 @@ from listing_filters import (  # noqa: E402
     listing_full_text,
 )
 from llm_usage import instrument_openai  # noqa: E402
+from tavily_usage import instrument_tavily, tavily_plan_exhausted  # noqa: E402
 
 _VALIDATORS_DIR = Path(__file__).resolve().parent.parent / "validators"
 if str(_VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(_VALIDATORS_DIR))
+
+from rex_limits import rex_tavily_max_calls  # noqa: E402
+from tavily_credits import is_tavily_plan_limit_error, tavily_search_depth  # noqa: E402
 
 # Ref: Asia/Hong_Kong (UTC+8) ISO 8601
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -374,6 +378,7 @@ def summarize_jd(client, chat_model: str, jd_text: str, max_chars: int = 600) ->
             ],
             response_format={"type": "json_object"},
             temperature=0,
+            max_tokens=512,
         )
         raw = response.choices[0].message.content or ""
         payload = json.loads(parse_json_payload(raw))
@@ -764,9 +769,11 @@ class JobDBManager:
             self._collapse_duplicate_jobs()
             self._backfill_posted_at()
             from people_store import ensure_schema, sync_people_from_config
+            from agent_run_store import ensure_agent_runs_table
 
             ensure_schema(self.db)
             sync_people_from_config(self.db, PROJECT_ROOT)
+            ensure_agent_runs_table(self.db)
 
     def _rewrite_phenom_listing_urls(self) -> None:
         """Fix HKJC/HKT Phenom URLs so the dashboard link opens the vacancy."""
@@ -1271,7 +1278,8 @@ class JobDBManager:
         """
         cursor = self.db.execute(
             """
-            SELECT id, job_url, job_title, company_name, jd_snippet, jd_full, match_score
+            SELECT id, job_url, job_title, company_name, jd_snippet, jd_full, match_score,
+                   application_status
             FROM job_postings
             WHERE LOWER(TRIM(company_name)) = LOWER(TRIM(?))
               AND COALESCE(expired, 0) = 0
@@ -1281,7 +1289,7 @@ class JobDBManager:
             (company_name, min_score),
         )
         rows = []
-        for job_id, url, title, company, snippet, full, score in cursor.fetchall():
+        for job_id, url, title, company, snippet, full, score, app_status in cursor.fetchall():
             rows.append({
                 "id": job_id,
                 "job_url": url or "",
@@ -1290,6 +1298,7 @@ class JobDBManager:
                 "jd_snippet": snippet or "",
                 "jd_full": full or snippet or "",
                 "match_score": score,
+                "application_status": app_status or "",
             })
         return rows
 
@@ -1518,13 +1527,73 @@ class JobDBManager:
 
 class TalentScoutAgent:
     def __init__(self, tavily_api_key: str, deepseek_api_key: str):
-        self.tavily = TavilyClient(api_key=tavily_api_key)
+        self.tavily = instrument_tavily(TavilyClient(api_key=tavily_api_key))
         self.chat_model = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_CHAT_MODEL)
         self.client = instrument_openai(OpenAI(
             api_key=deepseek_api_key,
             base_url=DEEPSEEK_BASE_URL,
         ))
         self.db_manager = JobDBManager(embedding_dim=EMBEDDING_DIM)
+        self._rex_tavily_budget: Optional[int] = None
+        self._rex_tavily_used = 0
+        self._rex_tavily_cap_logged = False
+
+    def begin_rex_tavily_budget(self) -> None:
+        """Cap Tavily search+extract for one Rex scan. # Ref: REX_TAVILY_MAX_CALLS"""
+        self._rex_tavily_budget = rex_tavily_max_calls()
+        self._rex_tavily_used = 0
+        self._rex_tavily_cap_logged = False
+
+    def end_rex_tavily_budget(self) -> None:
+        self._rex_tavily_budget = None
+        self._rex_tavily_used = 0
+        self._rex_tavily_cap_logged = False
+
+    def rex_tavily_exhausted(self) -> bool:
+        if tavily_plan_exhausted():
+            return True
+        if self._rex_tavily_budget is None:
+            return False
+        return self._rex_tavily_used >= self._rex_tavily_budget
+
+    def _burn_rex_tavily_budget(self, exc: BaseException) -> None:
+        if not is_tavily_plan_limit_error(exc):
+            return
+        if self._rex_tavily_budget is not None:
+            self._rex_tavily_used = self._rex_tavily_budget
+        try:
+            from activity_logger import log_activity
+
+            log_activity(
+                "Rex",
+                "Tavily plan exhausted — remaining searches skipped",
+                level="WARN",
+            )
+        except Exception:
+            pass
+
+    def _reserve_tavily_call(self) -> bool:
+        if tavily_plan_exhausted():
+            return False
+        if self._rex_tavily_budget is None:
+            return True
+        if self._rex_tavily_used >= self._rex_tavily_budget:
+            if not self._rex_tavily_cap_logged:
+                self._rex_tavily_cap_logged = True
+                print(
+                    f"⏹️  [Tavily budget] {self._rex_tavily_budget} calls this Rex run — further Tavily skipped"
+                )
+                try:
+                    from activity_logger import log_activity
+                    log_activity(
+                        "Rex",
+                        f"Tavily cap {self._rex_tavily_budget} reached; remaining searches skipped",
+                    )
+                except Exception:
+                    pass
+            return False
+        self._rex_tavily_used += 1
+        return True
 
     def get_embedding(self, text: str) -> List[float]:
         return lexical_embedding(text, EMBEDDING_DIM)
@@ -1542,19 +1611,22 @@ class TalentScoutAgent:
         domains = list(dict.fromkeys(domains))[:TAVILY_MAX_INCLUDE_DOMAINS]
         if not domains:
             return []
+        if not self._reserve_tavily_call():
+            return []
         # days= is ignored unless topic=news; use time_range instead.
         # Ref: Tavily Search API time_range / include_raw_content / include_domains
         try:
             response = self.tavily.search(
                 query=query,
                 include_domains=domains,
-                search_depth="advanced",
+                search_depth=tavily_search_depth(),
                 max_results=max_results,
                 time_range=DEFAULT_TIME_RANGE,
                 include_raw_content="markdown",
             )
         except Exception as exc:
             print(f"⚠️ [Tavily search failed] {exc}")
+            self._burn_rex_tavily_budget(exc)
             try:
                 from activity_logger import log_activity
                 log_activity("Rex", f"Tavily search failed: {exc}", level="WARN")
@@ -1574,11 +1646,15 @@ class TalentScoutAgent:
         blob = str(seed.get("raw_content") or seed.get("content") or "")
         cards = jobsdb_postings_from_listing_text(blob, MAX_JOBSDB_POSTINGS_PER_CATEGORY)
         if len(cards) < 2:
-            try:
-                extracted = self.tavily.extract(urls=[category_url])
-            except Exception as exc:
-                print(f"⚠️ [JobsDB category extract failed] {category_url}: {exc}")
+            if not self._reserve_tavily_call():
                 extracted = {}
+            else:
+                try:
+                    extracted = self.tavily.extract(urls=[category_url])
+                except Exception as exc:
+                    print(f"⚠️ [JobsDB category extract failed] {category_url}: {exc}")
+                    self._burn_rex_tavily_budget(exc)
+                    extracted = {}
             rows = (extracted or {}).get("results") or []
             extra = ""
             if rows:
@@ -1653,11 +1729,15 @@ class TalentScoutAgent:
         blob = str(seed.get("raw_content") or seed.get("content") or "")
         cards = hkstp_postings_from_listing_text(blob, MAX_HKSTP_POSTINGS_PER_LISTING)
         if len(cards) < 2:
-            try:
-                extracted = self.tavily.extract(urls=[listing_url])
-            except Exception as exc:
-                print(f"⚠️ [HKSTP listing extract failed] {listing_url}: {exc}")
+            if not self._reserve_tavily_call():
                 extracted = {}
+            else:
+                try:
+                    extracted = self.tavily.extract(urls=[listing_url])
+                except Exception as exc:
+                    print(f"⚠️ [HKSTP listing extract failed] {listing_url}: {exc}")
+                    self._burn_rex_tavily_budget(exc)
+                    extracted = {}
             rows = (extracted or {}).get("results") or []
             extra = ""
             if rows:
@@ -1726,18 +1806,21 @@ class TalentScoutAgent:
         job-board whitelist, then keep only ATS or first-party career URLs.
         """
         print(f"🏢 [Career site discovery] {company}")
+        if not self._reserve_tavily_call():
+            return []
         try:
             response = self.tavily.search(
                 query=(
                     f"{company} official careers OR jobs Hong Kong "
                     f"site:careers OR Workday OR Greenhouse OR SuccessFactors"
                 ),
-                search_depth="advanced",
+                search_depth=tavily_search_depth(),
                 max_results=5,
                 time_range="year",
             )
         except Exception as exc:
             print(f"⚠️ [Career site discovery failed] {company}: {exc}")
+            self._burn_rex_tavily_budget(exc)
             return []
         hosts: List[str] = []
         for item in response.get("results", []):
@@ -1770,6 +1853,8 @@ class TalentScoutAgent:
         merged: Dict[str, dict] = {}
 
         for lane_name in selected_lanes:
+            if self.rex_tavily_exhausted():
+                break
             domains = SEARCH_LANES.get(lane_name, [])
             if not domains:
                 continue
@@ -1796,6 +1881,8 @@ class TalentScoutAgent:
 
         target_domains: List[str] = list(extra_domains or [])
         for company in target_companies or []:
+            if self.rex_tavily_exhausted():
+                break
             known = domains_for_companies([company])
             if known:
                 target_domains.extend(known)
@@ -1804,6 +1891,8 @@ class TalentScoutAgent:
         target_domains = list(dict.fromkeys(target_domains))
 
         if target_domains:
+            if self.rex_tavily_exhausted():
+                return list(merged.values())
             print(f"🔍 [Web Search:target_employers] {hk_query} → {target_domains}")
             for item in self._tavily_search(hk_query, target_domains, max_results_per_lane):
                 url = item.get("url")

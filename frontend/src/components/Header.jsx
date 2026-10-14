@@ -1,10 +1,9 @@
-// Header.jsx — two-band chrome: brand + primary actions, then KPIs + context.
-// Metrics stay inset (not buttons). Context actions share default panel chrome.
-// One chromatic primary: Talk to Milo. Telegram keeps its own mark color.
+// Header.jsx — brand, then KPIs + context (language, Telegram, profile).
+// Edit / new person live inside the profile dropdown.
 
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, Briefcase, FileCheck, FileText, MessageSquare, Search, Pencil, UserPlus } from 'lucide-react'
+import { Activity, Briefcase, FileCheck, FileText, Search } from 'lucide-react'
 import ProfileSwitcher from './ProfileSwitcher'
 import LanguageSwitcher from './LanguageSwitcher'
 import { api } from '../lib/api'
@@ -29,9 +28,14 @@ function Kpi({ icon: Icon, label, value, color }) {
   )
 }
 
-const CONTEXT_BTN = 'panel flex items-center gap-1.5 px-2.5 py-2 text-slate-300 disabled:opacity-40'
-
-export default function Header({ funnel, candidateId, onCandidateChange, onEditProfile, onNewPerson, onTalkMilo }) {
+export default function Header({
+  funnel,
+  candidateId,
+  onCandidateChange,
+  onEditProfile,
+  onNewPerson,
+  tick,
+}) {
   const { t } = useTranslation()
   const [tg, setTg] = useState(null)
 
@@ -48,39 +52,13 @@ export default function Header({ funnel, candidateId, onCandidateChange, onEditP
 
   return (
     <header className="panel p-3 mb-3 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="panel-inset w-11 h-11 flex items-center justify-center">
-            <span className="font-pixel text-[16px] text-amber-retro">J</span>
-          </div>
-          <div>
-            <h1 className="font-pixel text-[14px] text-amber-retro leading-tight">{t('app.title')}</h1>
-            <div className="font-mono text-[11px] text-slate-500">{t('app.subtitle')}</div>
-          </div>
+      <div className="flex items-center gap-3">
+        <div className="panel-inset w-11 h-11 flex items-center justify-center">
+          <span className="font-pixel text-[16px] text-amber-retro">J</span>
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={onTalkMilo}
-            title={t('milo.title')}
-            className="panel flex items-center gap-1.5 px-2.5 py-2"
-            style={{ color: '#a78bfa', borderColor: '#a78bfa' }}
-          >
-            <MessageSquare size={16} /> <span className="font-mono text-[12px]">{t('milo.talk')}</span>
-          </button>
-          {tgHref && (
-            <a
-              href={tgHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={t('telegram.open', { handle: tgLabel || '', id: tg?.bot_id ?? '' })}
-              className="panel flex items-center gap-1.5 px-2.5 py-2"
-              style={{ color: '#29a9eb', borderColor: '#29a9eb' }}
-            >
-              <TelegramIcon size={16} />
-              <span className="font-mono text-[12px]">{tgLabel || t('telegram.find')}</span>
-            </a>
-          )}
+        <div>
+          <h1 className="font-pixel text-[14px] text-amber-retro leading-tight">{t('app.title')}</h1>
+          <div className="font-mono text-[11px] text-slate-500">{t('app.subtitle')}</div>
         </div>
       </div>
 
@@ -95,22 +73,26 @@ export default function Header({ funnel, candidateId, onCandidateChange, onEditP
 
         <div className="flex flex-wrap items-center gap-2 md:border-l-2 md:border-ink-600 md:pl-3">
           <LanguageSwitcher />
-          <ProfileSwitcher value={candidateId} onChange={onCandidateChange} />
-          <button
-            onClick={onEditProfile}
-            disabled={!candidateId}
-            title={t('profile.edit')}
-            className={CONTEXT_BTN}
-          >
-            <Pencil size={16} /> <span className="font-mono text-[12px]">{t('profile.edit')}</span>
-          </button>
-          <button
-            onClick={onNewPerson}
-            title={t('profile.newPerson')}
-            className={CONTEXT_BTN}
-          >
-            <UserPlus size={16} /> <span className="font-mono text-[12px]">{t('profile.newPerson')}</span>
-          </button>
+          {tgHref && (
+            <a
+              href={tgHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={t('telegram.open', { handle: tgLabel || '', id: tg?.bot_id ?? '' })}
+              className="panel flex items-center gap-1 px-2 py-2"
+              style={{ color: '#29a9eb' }}
+            >
+              <TelegramIcon size={16} />
+              <span className="font-mono text-[11px]">{t('telegram.short')}</span>
+            </a>
+          )}
+          <ProfileSwitcher
+            value={candidateId}
+            onChange={onCandidateChange}
+            onEditPerson={onEditProfile}
+            onNewPerson={onNewPerson}
+            tick={tick}
+          />
         </div>
       </div>
     </header>

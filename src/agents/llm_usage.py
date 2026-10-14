@@ -33,6 +33,12 @@ def reset_usage(agent: str = "") -> None:
         _calls = 0
         _estimated = False
         _agent = agent or _agent
+    try:
+        from tavily_usage import reset_tavily
+
+        reset_tavily()
+    except Exception:
+        pass
 
 
 def _add(prompt: int, completion: int, estimated: bool = False) -> None:
@@ -124,7 +130,16 @@ def finalize_usage(agent: str) -> dict[str, int | str | bool]:
     with _LOCK:
         if agent:
             _agent = agent
-    snap = snapshot_usage()
+    snap: dict[str, int | str | bool] = dict(snapshot_usage())
+    try:
+        from tavily_usage import snapshot_tavily
+
+        snap.update(snapshot_tavily())
+    except Exception:
+        snap.setdefault("tavily_calls", 0)
+        snap.setdefault("tavily_credits_est", 0)
+        snap.setdefault("tavily_search_calls", 0)
+        snap.setdefault("tavily_extract_calls", 0)
     line = (
         f"TOKENS agent={snap['agent'] or agent} "
         f"prompt={snap['prompt_tokens']} completion={snap['completion_tokens']} "
@@ -132,6 +147,14 @@ def finalize_usage(agent: str) -> dict[str, int | str | bool]:
         f"{' estimated=1' if snap['estimated'] else ''}"
     )
     print(line)
+    tav_line = (
+        f"TAVILY agent={snap['agent'] or agent} "
+        f"calls={snap.get('tavily_calls', 0)} "
+        f"credits={snap.get('tavily_credits_est', 0)} "
+        f"search={snap.get('tavily_search_calls', 0)} "
+        f"extract={snap.get('tavily_extract_calls', 0)}"
+    )
+    print(tav_line)
     try:
         TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
         key = (str(snap["agent"] or agent or "agent")).lower()
@@ -147,6 +170,19 @@ def finalize_usage(agent: str) -> dict[str, int | str | bool]:
             f"Tokens prompt={snap['prompt_tokens']} completion={snap['completion_tokens']} "
             f"total={snap['total_tokens']}",
         )
+        log_activity(
+            agent or "SYSTEM",
+            f"Tavily calls={snap.get('tavily_calls', 0)} "
+            f"credits≈{snap.get('tavily_credits_est', 0)} "
+            f"(search={snap.get('tavily_search_calls', 0)} "
+            f"extract={snap.get('tavily_extract_calls', 0)})",
+        )
+    except Exception:
+        pass
+    try:
+        from agent_run_store import persist_agent_run
+
+        persist_agent_run(snap)
     except Exception:
         pass
     return snap

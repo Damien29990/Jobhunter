@@ -44,15 +44,25 @@ if str(_VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(_VALIDATORS_DIR))
 
 from system_one import should_rerun_dossier  # noqa: E402
+from tavily_credits import (  # noqa: E402
+    dana_tavily_alias_limit,
+    dana_tavily_max_calls,
+    tavily_search_depth,
+)
 
 from listing_filters import (  # noqa: E402
-    listing_check_verdict,
     listing_full_text,
-    listing_text_supports_title,
+    listing_live_check,
     listing_url_problem,
     normalize_listing_url,
 )
+from application_followup import skip_listing_expiry_check  # noqa: E402
 from llm_usage import instrument_openai  # noqa: E402
+from tavily_usage import (  # noqa: E402
+    begin_tavily_budget,
+    instrument_tavily,
+    tavily_budget_exhausted,
+)
 
 from activity_logger import log_activity  # noqa: E402
 from milo_context import milo_readme_prompt_block  # noqa: E402
@@ -735,11 +745,11 @@ class DueDiligenceAgent:
             raise ValueError("DUE_DILIGENCE_BACKEND must be 'official' or 'tavily'")
         self.tavily = None
         if self.backend == "":
-            self.backend = "tavily" if tavily_api_key else "official"
+            self.backend = "official"
         if self.backend == "tavily":
             if not tavily_api_key:
                 raise ValueError("TAVILY_API_KEY is required when DUE_DILIGENCE_BACKEND=tavily")
-            self.tavily = TavilyClient(api_key=tavily_api_key)
+            self.tavily = instrument_tavily(TavilyClient(api_key=tavily_api_key))
         self.chat_model = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_CHAT_MODEL)
         self.client = instrument_openai(
             OpenAI(api_key=deepseek_api_key, base_url=DEEPSEEK_BASE_URL)
@@ -777,9 +787,17 @@ class DueDiligenceAgent:
         stored = (job.get("job_url") or "").strip()
         url = normalize_listing_url(stored)
         title = job.get("job_title") or ""
+        if skip_listing_expiry_check(job.get("application_status")):
+            print(
+                f"ℹ️  [Listing check] job #{job.get('id')} already "
+                f"{job.get('application_status')} — skip expiry scan"
+            )
+            return True
         shape = listing_url_problem(url)
         if shape:
-            still, expire, reason = listing_check_verdict(shape, None, None, None)
+            still, expire, reason = listing_live_check(
+                url, None, None, "", title, url_problem=shape
+            )
             if expire:
                 self._mark_job_expired(job, reason)
             return still
@@ -793,15 +811,12 @@ class DueDiligenceAgent:
                     url = retry
                     status = int(response.status_code)
             http_ok = 200 <= status < 300
-            title_found: Optional[bool] = None
-            if http_ok:
-                page = html_to_text(response.text or "")
-                title_found = listing_text_supports_title(page, title)
-            still, expire, reason = listing_check_verdict(
-                None, http_ok, status, title_found
+            page = html_to_text(response.text or "") if http_ok else ""
+            still, expire, reason = listing_live_check(
+                url, http_ok, status, page, title
             )
         except httpx.HTTPError as exc:
-            still, expire, reason = listing_check_verdict(None, False, None, None)
+            still, expire, reason = listing_live_check(url, False, None, "", title)
             reason = f"{reason}: {exc}"
         if expire:
             self._mark_job_expired(job, reason)
@@ -836,7 +851,7 @@ class DueDiligenceAgent:
         """Split Tavily calls so Glassdoor/news/forums are not drowned by official homepages."""
         employer_hosts = domains_for_companies([company_name])
         lanes: List[tuple[str, List[str], str]] = []
-        for alias in primary_search_aliases(company_name, limit=2):
+        for alias in primary_search_aliases(company_name, limit=dana_tavily_alias_limit()):
             quoted = f'"{alias}"'
             lanes.extend(
                 [
@@ -926,7 +941,16 @@ class DueDiligenceAgent:
     def _search_tavily(self, company_name: str) -> List[dict]:
         merged: Dict[str, dict] = {}
         assert self.tavily is not None
+        if tavily_budget_exhausted():
+            return []
         for lane_name, domains, query in self._tavily_lanes(company_name):
+            if tavily_budget_exhausted():
+                log_activity(
+                    "Dana",
+                    "Tavily budget/plan exhausted — remaining lanes skipped",
+                    level="WARN",
+                )
+                break
             include_domains = list(dict.fromkeys(domains))
             print(f"🔍 [Research:tavily:{lane_name}] {query}")
             log_activity("Dana", f"Searching {lane_name} lane for {company_name}")
@@ -934,7 +958,7 @@ class DueDiligenceAgent:
                 response = self.tavily.search(
                     query=query,
                     include_domains=include_domains or None,
-                    search_depth="advanced",
+                    search_depth=tavily_search_depth(),
                     max_results=5,
                     time_range="year",
                     include_raw_content="markdown",
@@ -960,7 +984,9 @@ class DueDiligenceAgent:
         if self.tavily is None:
             return []
         extracted: List[dict] = []
-        for base in official_base_urls(company_name, hits)[:3]:
+        for base in official_base_urls(company_name, hits)[:1]:
+            if tavily_budget_exhausted():
+                break
             print(f"🔎 [tavily.extract] {base}")
             log_activity("Dana", f"Tavily extract: {base}")
             text = extract_official_site_content(self.tavily, base)
@@ -1069,6 +1095,22 @@ Research backend: {self.backend}
         if not is_usable_company_name(company_name):
             print(f"⏭️  [Skip] cannot research placeholder employer: {company_name!r}")
             return None
+        meta = self.db_manager.get_dossier_meta(company_name)
+        has_dossier = self.db_manager.has_current_dossier(company_name)
+        decision = should_rerun_dossier(
+            has_dossier=has_dossier,
+            dossier_updated_at=(meta or {}).get("updated_at") if meta else None,
+            dossier_confidence=(meta or {}).get("confidence") if meta else None,
+            newest_job_created_at=self.db_manager.latest_job_created_at(company_name),
+            force=force_refresh,
+        )
+        if not decision.proceed:
+            print(f"♻️  [System One skip research] {company_name}: {decision.reason}")
+            log_activity(
+                "Dana",
+                f"System One skip research {company_name}: {decision.reason}",
+            )
+            return None
         if seed_jobs is not None:
             live = [job for job in seed_jobs if job]
         else:
@@ -1088,22 +1130,6 @@ Research backend: {self.backend}
         )
         job_urls = " ".join(dict.fromkeys(j["job_url"] for j in live if j.get("job_url")))
         jd_snippets = "\n".join(j.get("jd_snippet") or "" for j in live)
-        meta = self.db_manager.get_dossier_meta(company_name)
-        has_dossier = self.db_manager.has_current_dossier(company_name)
-        decision = should_rerun_dossier(
-            has_dossier=has_dossier,
-            dossier_updated_at=(meta or {}).get("updated_at") if meta else None,
-            dossier_confidence=(meta or {}).get("confidence") if meta else None,
-            newest_job_created_at=self.db_manager.latest_job_created_at(company_name),
-            force=force_refresh,
-        )
-        if not decision.proceed:
-            print(f"♻️  [System One skip research] {company_name}: {decision.reason}")
-            log_activity(
-                "Dana",
-                f"System One skip research {company_name}: {decision.reason}",
-            )
-            return None
         log_activity("Dana", f"Research started for {company_name} ({decision.reason})")
         hits = self.search_company_background(
             company_name,
@@ -1209,6 +1235,7 @@ Research backend: {self.backend}
         regardless of its composite match score. The automated pipeline
         (no job_id, no force) still enforces ``min_score``.
         """
+        begin_tavily_budget(dana_tavily_max_calls() if self.backend == "tavily" else None)
         if job_id is not None:
             job = self.db_manager.get_job_by_id(job_id)
             if not job:
@@ -1260,7 +1287,7 @@ Research backend: {self.backend}
         recovered = self.repair_anonymous_jobs(min_score=min_score)
         pending = self.db_manager.list_companies_pending_diligence(
             min_score=min_score,
-            include_existing=True,
+            include_existing=force_refresh or force or bool(company),
         )
         if company:
             needle = company.strip().lower()
@@ -1273,6 +1300,12 @@ Research backend: {self.backend}
             return 0
         written = 0
         for row in pending:
+            if self.backend == "tavily" and tavily_budget_exhausted():
+                log_activity(
+                    "Dana",
+                    "Tavily budget/plan exhausted — remaining companies skip web search",
+                    level="WARN",
+                )
             result = self.research_company(
                 row["company_name"],
                 job_titles=row.get("job_titles") or "",
@@ -1334,7 +1367,7 @@ if __name__ == "__main__":
     deepseek_key = deepseek_api_key()
     backend = (os.environ.get("DUE_DILIGENCE_BACKEND") or "").strip().lower()
     if backend not in {"official", "tavily"}:
-        backend = "tavily" if tavily_key else "official"
+        backend = "official"
     if not deepseek_key:
         raise SystemExit("Set DEEPSEEK_API_KEY in the environment or a .env file.")
     if backend == "tavily" and not tavily_key:

@@ -50,11 +50,11 @@ def _api_description(response: httpx.Response) -> str:
         return f"HTTP {response.status_code}"
 
 
-def _send_raw(text: str, reply_markup: Optional[dict] = None) -> bool:
-    """Send a message. MarkdownV2 → plain → plain without buttons.
+def _send_message(text: str, reply_markup: Optional[dict] = None) -> dict:
+    """Send a message. Returns {ok, message_id, error}.
 
-    Telegram rejects `http://localhost` inline URL buttons (BUTTON_URL_INVALID),
-    which previously made every job/pipeline ping look like a silent skip.
+    MarkdownV2 → plain → plain without buttons.
+    Telegram rejects `http://localhost` inline URL buttons (BUTTON_URL_INVALID).
 
     # Ref: https://core.telegram.org/bots/api#sendmessage
     """
@@ -62,7 +62,7 @@ def _send_raw(text: str, reply_markup: Optional[dict] = None) -> bool:
     LAST_SEND_ERROR = ""
     if not _is_configured():
         LAST_SEND_ERROR = "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
-        return False
+        return {"ok": False, "message_id": None, "error": LAST_SEND_ERROR}
     token = _bot_token()
     chat_id = _chat_id()
     url = f"{API_BASE}{token}/sendMessage"
@@ -98,8 +98,76 @@ def _send_raw(text: str, reply_markup: Optional[dict] = None) -> bool:
                 body = {}
             if r.status_code == 200 and body.get("ok"):
                 LAST_SEND_ERROR = ""
+                mid = (body.get("result") or {}).get("message_id")
+                return {
+                    "ok": True,
+                    "message_id": int(mid) if mid is not None else None,
+                    "error": "",
+                }
+            last_err = _api_description(r)
+        LAST_SEND_ERROR = last_err
+        return {"ok": False, "message_id": None, "error": last_err}
+    except Exception as exc:
+        LAST_SEND_ERROR = str(exc)[:240]
+        return {"ok": False, "message_id": None, "error": LAST_SEND_ERROR}
+
+
+def _send_raw(text: str, reply_markup: Optional[dict] = None) -> bool:
+    """Send a message. MarkdownV2 → plain → plain without buttons."""
+    return bool(_send_message(text, reply_markup).get("ok"))
+
+
+def edit_message(
+    chat_id: object,
+    message_id: object,
+    text: str,
+    reply_markup: Optional[dict] = None,
+) -> bool:
+    """Replace text + keyboard on an existing bot message.
+
+    # Ref: https://core.telegram.org/bots/api#editmessagetext
+    """
+    global LAST_SEND_ERROR
+    LAST_SEND_ERROR = ""
+    if not _is_configured():
+        LAST_SEND_ERROR = "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
+        return False
+    token = _bot_token()
+    url = f"{API_BASE}{token}/editMessageText"
+    markup = reply_markup if reply_markup and reply_markup.get("inline_keyboard") else None
+    attempts: list[dict] = [
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": True,
+        },
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text.replace("\\", ""),
+            "disable_web_page_preview": True,
+        },
+    ]
+    if markup:
+        for payload in attempts:
+            payload["reply_markup"] = markup
+    try:
+        last_err = "editMessageText failed"
+        for payload in attempts:
+            r = httpx.post(url, json=payload, timeout=10.0)
+            try:
+                body = r.json() if r.content else {}
+            except Exception:
+                body = {}
+            if r.status_code == 200 and body.get("ok"):
+                LAST_SEND_ERROR = ""
                 return True
             last_err = _api_description(r)
+            if "message is not modified" in last_err.lower():
+                LAST_SEND_ERROR = ""
+                return True
         LAST_SEND_ERROR = last_err
         return False
     except Exception as exc:
@@ -233,6 +301,31 @@ def send_agent_update(
     return _send_raw(text, _dashboard_button())
 
 
+def clara_status_keyboard(job_id: int) -> dict:
+    """Inline buttons to set Clara application_status from Telegram."""
+    labels = (
+        ("APPLIED", "Applied"),
+        ("AWAITING", "Await"),
+        ("INTERVIEW", "Interview"),
+        ("OFFER", "Offer"),
+        ("REJECTED", "Reject"),
+        ("WITHDRAWN", "Withdraw"),
+    )
+    rows: list[list[dict]] = []
+    chunk: list[dict] = []
+    for code, label in labels:
+        chunk.append({"text": label, "callback_data": f"c:{int(job_id)}:{code}"})
+        if len(chunk) == 3:
+            rows.append(chunk)
+            chunk = []
+    if chunk:
+        rows.append(chunk)
+    dash = _dashboard_button()
+    if dash:
+        rows.extend(dash["inline_keyboard"])
+    return {"inline_keyboard": rows}
+
+
 def send_job_update(
     agent_name: str,
     event: str,
@@ -243,6 +336,7 @@ def send_job_update(
     url: str = "",
     extra: str = "",
     person_tag: Optional[str] = None,
+    job_id: Optional[int] = None,
 ) -> bool:
     """Notify when a single job row is created or updated.
 
@@ -262,7 +356,8 @@ def send_job_update(
         bits.append(_escape_md(extra[:280]))
     if url:
         bits.append(_escape_md(url[:300]))
-    return _send_raw("\n".join(bits), _dashboard_button())
+    markup = clara_status_keyboard(int(job_id)) if job_id is not None else _dashboard_button()
+    return _send_raw("\n".join(bits), markup)
 
 
 def send_listing_sweep(

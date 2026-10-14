@@ -74,7 +74,7 @@ export default function PipelineKanban({ candidateId, onSelectJob, onJobOrderCha
     async function load() {
       try {
         const [j, d, shelf] = await Promise.all([
-          api.jobs({ candidate_id: candidateId, page_size: 200, view: 'active' }),
+          api.jobs({ candidate_id: candidateId, page_size: 2000, view: 'active' }),
           api.dossiers(),
           api.jobsShelf().catch(() => null),
         ])

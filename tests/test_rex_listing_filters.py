@@ -24,6 +24,8 @@ from listing_filters import (
     listing_check_verdict,
     listing_text_supports_title,
     listing_url_problem,
+    linkedin_apply_closed,
+    linkedin_live_check,
     normalize_listing_url,
     prefer_listing_title,
     title_from_job_url,
@@ -120,7 +122,7 @@ def test_listing_check_verdict_expire_rules() -> None:
     still, expire, _ = listing_check_verdict(None, False, 410, None)
     assert still is False and expire is True
     still, expire, _ = listing_check_verdict(None, True, 200, False)
-    assert still is False and expire is True
+    assert still is False and expire is False
     still, expire, _ = listing_check_verdict(None, False, 403, None)
     assert still is False and expire is False
     still, expire, _ = listing_check_verdict(None, False, 503, None)
@@ -129,6 +131,91 @@ def test_listing_check_verdict_expire_rules() -> None:
     assert still is False and expire is False
     still, expire, reason = listing_check_verdict(None, True, 200, True)
     assert still is True and expire is False and reason == "ok"
+
+
+def test_listing_live_check_public_banner_vs_in_house_unfound() -> None:
+    from listing_filters import listing_host_kind, listing_live_check
+
+    jobsdb = "https://hk.jobsdb.com/job/80001234"
+    greenhouse = "https://job-boards.greenhouse.io/acme/jobs/12345678"
+    workday = "https://hsbc.wd3.myworkdayjobs.com/en-US/External_Careers/job/Hong-Kong/Software-Engineer_R12345"
+    assert listing_host_kind(jobsdb) == "public_board"
+    assert listing_host_kind(greenhouse) == "in_house"
+    assert listing_host_kind(workday) == "in_house"
+
+    banner = "Senior Python Engineer. This job is no longer available."
+    still, expire, reason = listing_live_check(jobsdb, True, 200, banner, "Senior Python Engineer")
+    assert still is False and expire is True
+    assert "closed" in reason
+
+    still, expire, _ = listing_live_check(
+        jobsdb, True, 200, "Search jobs in Hong Kong. Sign in to continue.", "Senior Python Engineer"
+    )
+    assert still is False and expire is False
+
+    still, expire, _ = listing_live_check(jobsdb, False, 404, "", "Senior Python Engineer")
+    assert expire is True
+
+    still, expire, reason = listing_live_check(
+        greenhouse, False, 404, "", "Backend Engineer"
+    )
+    assert still is False and expire is False
+    assert "dynamic id" in reason
+
+    still, expire, reason = listing_live_check(
+        greenhouse,
+        True,
+        200,
+        "Job not found. We can't find this job.",
+        "Backend Engineer",
+    )
+    assert still is False and expire is False
+    assert "dynamic id" in reason
+
+    still, expire, _ = listing_live_check(
+        greenhouse,
+        True,
+        200,
+        "Backend Engineer. This position has been filled.",
+        "Backend Engineer",
+    )
+    assert expire is True
+
+    ct = "https://www.ctgoodjobs.hk/job/9001"
+    still, expire, _ = listing_live_check(
+        ct, True, 200, "數據分析師 此職位已過期 已截止申請", "數據分析師"
+    )
+    assert expire is True
+
+    past = '{"validThrough": "2020-01-01T00:00:00+08:00"} Senior Python Engineer'
+    still, expire, reason = listing_live_check(jobsdb, True, 200, past, "Senior Python Engineer")
+    assert expire is True
+    assert "validThrough" in reason
+
+
+def test_jobsdb_expired_job_page_still_http_200() -> None:
+    """SEEK keeps the vacancy URL live with expiredJobPage + isExpired JSON.
+
+    # Ref: https://hk.jobsdb.com/job/93429744
+    """
+    from listing_filters import applications_closed_in_text, jobsdb_expired_in_text, listing_live_check
+
+    url = "https://hk.jobsdb.com/job/93429744?ref=search-standalone&origin=cardTitle"
+    heading = (
+        '<div data-automation="expiredJobPage"><h2>This job is no longer advertised</h2>'
+        "<span>Jobs remain on Jobsdb for 30 days, unless the advertiser removes them sooner.</span></div>"
+    )
+    json_only = (
+        '{"id":"93429744","title":"AI Agent Engineer","isExpired":true,'
+        '"jobStatus":"expired","status":"Expired"}'
+    )
+    assert applications_closed_in_text(heading) is True
+    assert jobsdb_expired_in_text(url, heading) is True
+    still, expire, _ = listing_live_check(url, True, 200, heading, "AI Agent Engineer")
+    assert still is False and expire is True
+    still, expire, _ = listing_live_check(url, True, 200, json_only, "AI Agent Engineer")
+    assert still is False and expire is True
+    assert jobsdb_expired_in_text("https://job-boards.greenhouse.io/acme/jobs/1", json_only) is False
 
 
 def test_phenom_hkjc_hkt_are_job_postings() -> None:
@@ -212,3 +299,18 @@ def test_parse_posted_at_from_iso_and_jd_text() -> None:
         "Officer, AI and Data Science",
         "Researcher, AI and Data Science",
     )
+
+
+def test_linkedin_closed_apply_keeps_open_login_wall() -> None:
+    url = "https://www.linkedin.com/jobs/view/4291012345"
+    closed = "Senior Engineer. No longer accepting applications."
+    assert linkedin_apply_closed(url, closed)
+    assert linkedin_apply_closed("https://hk.jobsdb.com/job/80001234/x", closed) is None
+    still, expire, reason = linkedin_live_check(True, 200, "Sign in to LinkedIn")
+    assert still is True and expire is False
+    still, expire, reason = linkedin_live_check(True, 200, closed)
+    assert expire is True
+    still, expire, reason = linkedin_live_check(False, 404, "")
+    assert expire is True
+    still, expire, reason = linkedin_live_check(False, 999, "")
+    assert still is False and expire is False

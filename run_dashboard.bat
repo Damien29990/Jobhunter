@@ -1,42 +1,33 @@
 @echo off
 REM ============================================================
-REM  Jobhunter Pixel Office Dashboard launcher (Windows cmd)
-REM  Starts the FastAPI backend (:8000) and Vite frontend (:5173).
-REM  Close this window (or Ctrl+C) to stop the frontend.
-REM  The backend runs in a separate window titled "Jobhunter API".
+REM  Jobhunter — one .bat starts backend (:8000) and frontend (:5173).
+REM  Double-click this file. The API window is the same script with "api".
 REM ============================================================
-setlocal enabledelayedexpansion
 cd /d "%~dp0"
+
+if /I "%~1"=="api" goto :start_api
+
+setlocal enabledelayedexpansion
+set "CONDA_ENV=jobhunter"
+set "CONDA_OK=0"
 
 echo.
 echo [run_dashboard] Jobhunter Pixel Office Dashboard
 echo [run_dashboard] ================================
 echo.
 
-REM ---- 1. Activate conda env 'jobhunter' (try several methods) ----
-set "CONDA_ENV=jobhunter"
-set "CONDA_OK=0"
-
-REM Method A: conda already initialized in this shell
 call conda activate %CONDA_ENV% 2>nul && set "CONDA_OK=1"
-
-REM Method B: Anaconda install
 if "!CONDA_OK!"=="0" if exist "%USERPROFILE%\anaconda3\Scripts\activate.bat" (
   echo [run_dashboard] activating via Anaconda...
   call "%USERPROFILE%\anaconda3\Scripts\activate.bat" %CONDA_ENV% && set "CONDA_OK=1"
 )
-
-REM Method C: Miniconda install
 if "!CONDA_OK!"=="0" if exist "%USERPROFILE%\miniconda3\Scripts\activate.bat" (
   echo [run_dashboard] activating via Miniconda...
   call "%USERPROFILE%\miniconda3\Scripts\activate.bat" %CONDA_ENV% && set "CONDA_OK=1"
 )
-
 if "!CONDA_OK!"=="0" (
   echo [run_dashboard] WARNING: could not activate conda env '%CONDA_ENV%'.
   echo [run_dashboard]          Continuing with the current Python on PATH ^(if any^).
-  echo [run_dashboard]          If python is missing, open an "Anaconda Prompt", run `conda activate jobhunter`,
-  echo [run_dashboard]          then run this .bat from there.
 )
 
 echo.
@@ -49,7 +40,6 @@ if errorlevel 1 (
 )
 python --version
 
-REM ---- 2. Backend deps ----
 echo.
 echo [run_dashboard] Installing backend deps if needed...
 python -m pip install -q -r src\api\requirements.txt
@@ -59,7 +49,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM ---- 3. Frontend deps ----
 echo.
 if not exist "frontend\node_modules" (
   echo [run_dashboard] Installing frontend deps ^(first run, may take a minute^)...
@@ -82,17 +71,40 @@ if not exist "frontend\node_modules" (
   echo [run_dashboard] frontend deps already installed.
 )
 
-REM ---- 4. Launch both ----
 echo.
 echo [run_dashboard] Starting FastAPI backend on http://127.0.0.1:8000 ...
-start "Jobhunter API" cmd /k "cd /d %~dp0 && set PYTHONUTF8=1 && set PYTHONIOENCODING=utf-8 && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload"
+start "Jobhunter API" cmd /k "%~f0" api
 
 echo [run_dashboard] Starting Vite frontend on http://localhost:5173 ...
 echo [run_dashboard] Open http://localhost:5173 in your browser.
-echo [run_dashboard] (Close the "Jobhunter API" window to stop the backend.)
+echo [run_dashboard] Close this window to stop the frontend. Close "Jobhunter API" to stop the backend.
 echo.
 pushd frontend
 call npm run dev
 popd
-
 endlocal
+exit /b 0
+
+:start_api
+REM Same file, API window only. New cmd does not inherit conda.
+call conda activate jobhunter 2>nul
+if /I not "%CONDA_DEFAULT_ENV%"=="jobhunter" (
+  if exist "%USERPROFILE%\miniconda3\Scripts\activate.bat" (
+    call "%USERPROFILE%\miniconda3\Scripts\activate.bat" jobhunter
+  )
+)
+if /I not "%CONDA_DEFAULT_ENV%"=="jobhunter" (
+  if exist "%USERPROFILE%\anaconda3\Scripts\activate.bat" (
+    call "%USERPROFILE%\anaconda3\Scripts\activate.bat" jobhunter
+  )
+)
+if /I not "%CONDA_DEFAULT_ENV%"=="jobhunter" (
+  echo [run_dashboard] ERROR: could not activate conda env jobhunter.
+  echo [run_dashboard] conda activate jobhunter ^&^& python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload
+  pause
+  exit /b 1
+)
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+echo [run_dashboard] CONDA_DEFAULT_ENV=%CONDA_DEFAULT_ENV%
+python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload

@@ -29,6 +29,7 @@ def notify_job_update(
     score: Optional[int] = None,
     url: str = "",
     extra: str = "",
+    job_id: Optional[int] = None,
 ) -> bool:
     """Send one Telegram message for a single job-row update."""
     try:
@@ -43,6 +44,7 @@ def notify_job_update(
             score=score,
             url=url,
             extra=extra,
+            job_id=job_id,
         )
         if not ok:
             from telegram_notifier import LAST_SEND_ERROR
@@ -96,4 +98,42 @@ def notify_application_package(
         return bool(result.get("sent"))
     except Exception as exc:
         log_activity("Clara", f"Telegram pack error: {exc}", level="WARN")
+        return False
+
+
+def notify_apply_overview() -> bool:
+    """Ask the running API to send the Apply overview so button sessions live there."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_PROJECT_ROOT / ".env")
+        import os
+
+        import httpx
+
+        base = (os.environ.get("JOBHUNTER_API_URL") or "http://127.0.0.1:8000").rstrip("/")
+        response = httpx.post(f"{base}/api/telegram/apply-overview", timeout=20.0)
+        if response.status_code == 200:
+            log_activity("Clara", "Apply overview sent via hosting API")
+            return True
+        log_activity(
+            "Clara",
+            f"Apply overview API {response.status_code} — FastAPI must be hosting",
+            level="WARN",
+        )
+    except Exception as exc:
+        log_activity(
+            "Clara",
+            f"Apply overview needs a running API (◀️ / ▶️): {exc}",
+            level="WARN",
+        )
+    try:
+        from apply_overview import send_apply_overview
+
+        result = send_apply_overview()
+        if result.get("ok"):
+            log_activity("Clara", "Apply overview sent directly (API inbox not hosting)")
+            return True
+        return False
+    except Exception as exc:
+        log_activity("Clara", f"Apply overview direct send failed: {exc}", level="WARN")
         return False

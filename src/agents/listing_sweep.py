@@ -1,6 +1,6 @@
 """Sweep kanban-visible job URLs before Rex searches.
 
-Hidden shelf jobs (low score, already expired, unconsiderable) are skipped.
+Hidden shelf jobs and already-applied follow-up statuses are skipped.
 Dead listings are marked expired. One Telegram summary is sent.
 
 # Ref: pipeline — before Rex; dashboard check_job / listing_check_verdict
@@ -25,9 +25,9 @@ for extra in (_API_DIR, _VALIDATORS_DIR):
         sys.path.insert(0, str(extra))
 
 from activity_logger import log_activity, log_system  # noqa: E402
+from application_followup import skip_listing_expiry_check  # noqa: E402
 from listing_filters import (  # noqa: E402
-    listing_check_verdict,
-    listing_text_supports_title,
+    listing_live_check,
     listing_url_problem,
     normalize_listing_url,
 )
@@ -65,7 +65,8 @@ def sweep_kanban_listings(db_path: Optional[Path] = None) -> dict:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT id, job_url, job_title, company_name, match_score, expired, user_status "
+            "SELECT id, job_url, job_title, company_name, match_score, expired, user_status, "
+            "application_status "
             "FROM job_postings"
         ).fetchall()
         expired_items: list[dict] = []
@@ -73,6 +74,8 @@ def sweep_kanban_listings(db_path: Optional[Path] = None) -> dict:
         unknown = 0
         for row in rows:
             if not is_kanban_visible(row["match_score"], row["expired"], row["user_status"]):
+                continue
+            if skip_listing_expiry_check(row["application_status"]):
                 continue
             checked += 1
             url = normalize_listing_url(str(row["job_url"] or "").strip())
@@ -91,14 +94,13 @@ def sweep_kanban_listings(db_path: Optional[Path] = None) -> dict:
                 continue
             shape = listing_url_problem(url)
             if shape:
-                still, expire, reason = listing_check_verdict(shape, None, None, None)
+                still, expire, reason = listing_live_check(
+                    url, None, None, "", title, url_problem=shape
+                )
             else:
                 http_ok, status, text = _fetch_page(url)
-                title_found: Optional[bool] = None
-                if http_ok:
-                    title_found = listing_text_supports_title(text, title)
-                still, expire, reason = listing_check_verdict(
-                    None, http_ok, status, title_found
+                still, expire, reason = listing_live_check(
+                    url, http_ok, status, text, title
                 )
                 if http_ok is False and status is None:
                     reason = text or reason

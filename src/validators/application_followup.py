@@ -59,6 +59,19 @@ def follow_up_needed(status: Optional[str], application_ready: bool | None) -> b
     return normalize_application_status(status) in OPEN_FOLLOW_UP
 
 
+def skip_listing_expiry_check(status: Optional[str]) -> bool:
+    """Do not HTTP-expire listings the user already applied to or closed.
+
+    After apply, job boards often 404, login-wall, or drop the title from the
+    page; listing_sweep would wrongly shelf those rows. READY packs still scan.
+    # Ref: listing_sweep / Dana check_listing_still_open
+    """
+    normalized = normalize_application_status(status)
+    if normalized == STATUS_READY:
+        return False
+    return normalized in APPLICATION_STATUSES
+
+
 def default_status_when_pack_ready(existing: Optional[str]) -> str:
     """Keep a later user status; stamp READY the first time Clara finishes.
 

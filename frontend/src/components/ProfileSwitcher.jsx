@@ -1,23 +1,25 @@
-// ProfileSwitcher.jsx — candidate profile dropdown. Forward-compatible with config/profiles/.
+// ProfileSwitcher.jsx — candidate dropdown with per-person edit and add at the end.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, User } from 'lucide-react'
+import { ChevronDown, Pencil, User, UserPlus } from 'lucide-react'
 import { api } from '../lib/api'
 
-export default function ProfileSwitcher({ value, onChange }) {
+export default function ProfileSwitcher({ value, onChange, onEditPerson, onNewPerson, tick }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [candidates, setCandidates] = useState([])
   const [loading, setLoading] = useState(true)
   const ref = useRef(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.candidates()
       .then(setCandidates)
       .catch(() => setCandidates([]))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => { load() }, [load, tick])
 
   useEffect(() => {
     if (!candidates.length) return
@@ -36,10 +38,28 @@ export default function ProfileSwitcher({ value, onChange }) {
 
   const current = candidates.find((c) => c.id === value) || candidates[0]
 
+  function selectPerson(id) {
+    onChange(id)
+    setOpen(false)
+  }
+
+  function editPerson(e, id) {
+    e.stopPropagation()
+    onChange(id)
+    onEditPerson?.(id)
+    setOpen(false)
+  }
+
+  function addPerson() {
+    onNewPerson?.()
+    setOpen(false)
+  }
+
   return (
     <div className="relative" ref={ref}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        type="button"
+        onClick={() => { setOpen((v) => !v); if (!open) load() }}
         className="panel flex items-center gap-2 px-3 py-2"
       >
         <User size={16} className="text-cyan-retro" />
@@ -60,27 +80,45 @@ export default function ProfileSwitcher({ value, onChange }) {
             </div>
           )}
           {candidates.map((c) => (
-            <button
+            <div
               key={c.id}
-              onClick={() => { onChange(c.id); setOpen(false) }}
-              className={`w-full text-left px-3 py-2 hover:bg-ink-700 border-b border-ink-700 last:border-b-0 ${
+              className={`flex items-stretch border-b border-ink-700 ${
                 c.id === value ? 'bg-ink-700' : ''
               }`}
             >
-              <div className="flex items-center justify-between">
-                <span className="font-pixel text-[12px] text-slate-100">{c.name}</span>
-                {c.is_default && (
-                  <span className="font-mono text-[10px] text-amber-retro">{t('candidate.default')}</span>
-                )}
-              </div>
-              <div className="font-mono text-[11px] text-slate-500 truncate mt-0.5">
-                {c.target_roles?.[0] || c.id}
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => selectPerson(c.id)}
+                className="flex-1 min-w-0 text-left px-3 py-2 hover:bg-ink-700"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-pixel text-[12px] text-slate-100 truncate">{c.name}</span>
+                  {c.is_default && (
+                    <span className="font-mono text-[10px] text-amber-retro shrink-0">{t('candidate.default')}</span>
+                  )}
+                </div>
+                <div className="font-mono text-[11px] text-slate-500 truncate mt-0.5">
+                  {c.target_roles?.[0] || c.id}
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => editPerson(e, c.id)}
+                title={t('profile.edit')}
+                className="shrink-0 px-2.5 text-slate-400 hover:text-cyan-retro"
+              >
+                <Pencil size={16} />
+              </button>
+            </div>
           ))}
-          <div className="px-3 py-2 bg-ink-900 font-mono text-[10px] text-slate-600">
-            {t('candidate.addHint')}
-          </div>
+          <button
+            type="button"
+            onClick={addPerson}
+            className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-ink-700 text-slate-300"
+          >
+            <UserPlus size={16} />
+            <span className="font-mono text-[12px]">{t('profile.newPerson')}</span>
+          </button>
         </div>
       )}
     </div>

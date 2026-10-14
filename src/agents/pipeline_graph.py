@@ -13,8 +13,11 @@ import json
 import os
 import sys
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -257,7 +260,9 @@ def dana_node(state: dict) -> dict:
 
     tavily_key = tavily_api_key()
     deepseek_key = deepseek_api_key()
-    backend = os.environ.get("DUE_DILIGENCE_BACKEND", "tavily" if tavily_key else "official")
+    backend = (os.environ.get("DUE_DILIGENCE_BACKEND") or "official").strip().lower()
+    if backend not in {"official", "tavily"}:
+        backend = "official"
 
     agent = DueDiligenceAgent(
         deepseek_api_key=deepseek_key,
@@ -338,7 +343,15 @@ def clara_node(state: dict) -> dict:
         deepseek_api_key=deepseek_key,
         profile_path=Path(state.get("profile_path") or str(DEFAULT_PROFILE_PATH)),
     )
-    count = agent.run_pipeline(min_score=80)
+    try:
+        count = agent.run_pipeline(min_score=80)
+    except Exception as exc:
+        log_activity("Clara", f"Audit crashed: {exc}", level="ERROR")
+        state["errors"].append(f"Clara: {exc}")
+        m = _record_metrics("clara", start, False, str(exc), usage=finalize_usage("Clara"))
+        state["node_metrics"]["clara"] = m.model_dump()
+        state["checklist_results"] = [{"count": 0}]
+        return state
     state["checklist_results"] = [{"count": count}]
     m = _record_metrics("clara", start, True, usage=finalize_usage("Clara"))
     state["node_metrics"]["clara"] = m.model_dump()
@@ -454,6 +467,14 @@ def run_pipeline(
     Returns the final state dict with all results and telemetry.
     """
     load_dotenv(PROJECT_ROOT / ".env")
+    os.environ["JOBHUNTER_PIPELINE_RUN_ID"] = (
+        datetime.now(ZoneInfo("Asia/Hong_Kong")).strftime("%Y%m%dT%H%M%S")
+        + "-"
+        + uuid.uuid4().hex[:8]
+    )
+    from obsidian_vault import export_obsidian_foundation  # noqa: E402
+
+    export_obsidian_foundation()
 
     if not LANGGRAPH_AVAILABLE:
         raise ImportError("langgraph is not installed")
@@ -511,13 +532,24 @@ def run_pipeline(
         )
     except Exception as exc:
         log_system(f"LangGraph pipeline crashed: {exc}", level="ERROR")
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+            from apply_overview import announce_pipeline_finish
+
+            announce_pipeline_finish(
+                success=False, source="langgraph", error=str(exc), send_telegram=False
+            )
+        except Exception:
+            pass
         raise
     log_system("LangGraph pipeline run complete", level="EXIT")
 
-    # Send pipeline summary to Telegram with total token usage
+    # Send pipeline summary + Apply overview (all application_ready jobs)
     try:
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "api"))
+        from apply_overview import announce_pipeline_finish
         from telegram_notifier import send_pipeline_summary
         jobs = len(final_state.get("jobs_found", []))
         dossiers = len(final_state.get("dossiers", []))
@@ -536,6 +568,8 @@ def run_pipeline(
             application_ready=checklists, total_tokens=total_tokens,
             total_latency_ms=total_latency, errors=final_state.get("errors"),
         )
+        announce_pipeline_finish(success=True, source="langgraph")
+        log_system("Apply overview sent after pipeline finish", level="INFO")
     except Exception:
         pass  # never let notification crash the pipeline
 

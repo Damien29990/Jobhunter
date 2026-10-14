@@ -10,6 +10,37 @@
     "companies": "公司",
     "runs": "執行"
   },
+  "usage": {
+    "title": "Token 同 Tavily 用量",
+    "hint": "DeepSeek tokens 同估計 Tavily credits。advanced 搜尋 2 分、basic 1 分；extract 每 5 個 URL 1 分。跑完先寫入紀錄；代理工作緊會即時更新上方數字。",
+    "empty": "未有完成紀錄 — 跑完一次管線或單一代理後會出現。代理工作緊時，即時用量仍會顯示喺上面。",
+    "pipeline": "管線",
+    "solo": "單次執行",
+    "pipelineSum": "{{tokens}} tokens · ≈{{credits}} Tavily credits",
+    "tokensLine": "{{total}} tokens（{{prompt}} 入 / {{completion}} 出）",
+    "tavilyLine": "≈{{credits}} credits · {{calls}} 次（search {{search}} / extract {{extract}}）",
+    "kpiTokens": "Tokens",
+    "kpiTokensWeek": "Tokens · 7 日",
+    "kpiTavily": "Tavily credits",
+    "kpiCalls": "Tavily 次數",
+    "lifetime": "全部時間",
+    "week": "近 7 日（香港時間）",
+    "inOut": "{{prompt}} 入 / {{completion}} 出",
+    "searchExtract": "search {{search}} · extract {{extract}}",
+    "runsCount": "{{count}} 次執行",
+    "byAgent": "按代理",
+    "colAgent": "代理",
+    "colRuns": "次數",
+    "colTokens": "Tokens",
+    "colTavily": "Credits",
+    "colCalls": "呼叫",
+    "history": "最近執行",
+    "live": "進行中",
+    "liveIdle": "而家冇代理用緊 token 或 Tavily。",
+    "toggleShow": "展開 token 同 Tavily 用量",
+    "toggleHide": "收起 token 同 Tavily 用量",
+    "collapsedSum": "{{tokens}} tokens · ≈{{credits}} Tavily credits"
+  },
   "kpi": {
     "found": "已發現",
     "scoreGe80": "分數≥80",
@@ -26,9 +57,15 @@
   "office": {
     "title": "像素辦公室",
     "live": "即時 · 每 2.5 秒輪詢",
+    "laya": "Laya",
+    "layaRole": "System One",
+    "layaHeuristic": "啟發式",
+    "layaOnline": "Laya 在線",
+    "layaHint": "DeepSeek 計分前的有型別是否判斷",
     "clickToTalk": "點擊對話",
     "awaiting": "等待指令…",
     "tokens": "{{total}} tokens（{{prompt}} 輸入 / {{completion}} 輸出）",
+    "tavily": "Tavily ≈{{credits}} credits（{{calls}} 次呼叫）",
     "states": {
       "IDLE": "閒置",
       "WORKING": "工作中",
@@ -313,7 +350,7 @@
   },
   "clara": {
     "followUpTitle": "Clara — 申請後跟進",
-    "followUpHint": "標記這份申請目前到哪一步。僱主有回覆時記在這裡，方便你跟進。",
+    "followUpHint": "標記這份申請目前到哪一步。亦可用 Telegram：/clara、/clara 職缺編號 APPLIED。FastAPI 未啟動時無法用 Bot。僱主有回覆時記在這裡。",
     "followUpStatus": "申請狀態",
     "followUpNote": "你的備註（入口、遞交日期、招聘聯絡人）",
     "employerUpdate": "僱主更新",
@@ -334,14 +371,22 @@
     }
   },
   "backend": {
-    "offlineTitle": "後端離線",
-    "offlineMsg": "FastAPI 伺服器未在 :8000 運行。請在另一個終端啟動：",
+    "offlineTitle": "後端未托管",
+    "offlineMsg": "後端伺服器未在托管。FastAPI 未在 :8000 運行。請在另一個終端啟動：",
     "offlineCmd": "conda activate jobhunter && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload",
     "online": "後端上線"
   },
   "pipeline": {
     "run": "完成整條管線",
     "stop": "停止管線"
+  },
+  "pipelineFinish": {
+    "title": "管線完成 · 待申請總覽",
+    "failedTitle": "管線未完成 · 現有待申請職缺",
+    "subtitle": "{{count}} 份已備妥申請",
+    "empty": "呢次跑完之後，未有 application_ready 職缺。可能係 Rex 新職低過分數門檻、Dana 未 vet、Leo 未出 CV，或者 Clara 冇新清單要蓋。Kanban 最右欄同 Telegram /apply 都係同一批職缺。",
+    "employer": "僱主",
+    "role": "職位"
   },
   "logs": {
     "title": "代理日誌",
@@ -481,6 +526,10 @@
   "milo": {
     "title": "Milo",
     "talk": "與 Milo 對話",
+    "openDock": "開啟 Milo 對話",
+    "minimize": "收起",
+    "popOut": "彈出視窗",
+    "closePopup": "關閉視窗",
     "you": "你",
     "placeholder": "向 Milo 提問你的職涯…",
     "empty": "尚無對話 — 可用 LinkedIn 用戶名、附加 CV，或打個招呼。",
@@ -507,6 +556,7 @@
   },
   "telegram": {
     "find": "Telegram",
+    "short": "TG",
     "open": "開啟 Telegram 機械人 {{handle}}（id {{id}}）"
   }
 }

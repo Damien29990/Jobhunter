@@ -10,6 +10,37 @@
     "companies": "Companies",
     "runs": "Runs"
   },
+  "usage": {
+    "title": "Token & Tavily usage",
+    "hint": "DeepSeek tokens and estimated Tavily credits. Advanced search = 2, basic = 1; extract = 1 per 5 URLs. Finished runs write to the list; live counters update while an agent is working.",
+    "empty": "No finished runs yet — complete a pipeline or a single agent to populate history. Live counters still appear above while someone is working.",
+    "pipeline": "Pipeline",
+    "solo": "Single runs",
+    "pipelineSum": "{{tokens}} tokens · ≈{{credits}} Tavily credits",
+    "tokensLine": "{{total}} tokens ({{prompt}} in / {{completion}} out)",
+    "tavilyLine": "≈{{credits}} credits · {{calls}} calls (search {{search}} / extract {{extract}})",
+    "kpiTokens": "Tokens",
+    "kpiTokensWeek": "Tokens · 7 days",
+    "kpiTavily": "Tavily credits",
+    "kpiCalls": "Tavily calls",
+    "lifetime": "All time",
+    "week": "Last 7 days (HKT)",
+    "inOut": "{{prompt}} in / {{completion}} out",
+    "searchExtract": "search {{search}} · extract {{extract}}",
+    "runsCount": "{{count}} runs",
+    "byAgent": "By agent",
+    "colAgent": "Agent",
+    "colRuns": "Runs",
+    "colTokens": "Tokens",
+    "colTavily": "Credits",
+    "colCalls": "Calls",
+    "history": "Recent runs",
+    "live": "In progress",
+    "liveIdle": "No agent using tokens or Tavily right now.",
+    "toggleShow": "Show token and Tavily usage",
+    "toggleHide": "Hide token and Tavily usage",
+    "collapsedSum": "{{tokens}} tokens · ≈{{credits}} Tavily credits"
+  },
   "kpi": {
     "found": "FOUND",
     "scoreGe80": "SCORE≥80",
@@ -26,9 +57,15 @@
   "office": {
     "title": "Pixel Office",
     "live": "live · polling 2.5s",
+    "laya": "Laya",
+    "layaRole": "System One",
+    "layaHeuristic": "heuristic",
+    "layaOnline": "Laya online",
+    "layaHint": "Typed yes/no before DeepSeek spends tokens",
     "clickToTalk": "click to talk",
     "awaiting": "awaiting orders…",
     "tokens": "{{total}} tokens ({{prompt}} in / {{completion}} out)",
+    "tavily": "Tavily ≈{{credits}} credits ({{calls}} calls)",
     "states": {
       "IDLE": "IDLE",
       "WORKING": "WORKING",
@@ -312,7 +349,7 @@
   },
   "clara": {
     "followUpTitle": "Clara — after you apply",
-    "followUpHint": "Mark where this application is. If the employer writes back, save it here so you can follow up.",
+    "followUpHint": "Mark where this application is. Telegram: /clara, /clara <id> APPLIED. The bot only replies while FastAPI is hosting. Save employer replies here too.",
     "followUpStatus": "Application status",
     "followUpNote": "Your note (portal, date submitted, recruiter name)",
     "employerUpdate": "Employer update",
@@ -333,14 +370,22 @@
     }
   },
   "backend": {
-    "offlineTitle": "Backend offline",
-    "offlineMsg": "The FastAPI server is not running on :8000. Start it in another terminal:",
+    "offlineTitle": "Backend not hosting",
+    "offlineMsg": "The backend server is not hosting. FastAPI is not running on :8000. Start it in another terminal:",
     "offlineCmd": "conda activate jobhunter && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload",
     "online": "Backend online"
   },
   "pipeline": {
     "run": "Finish Pipeline",
     "stop": "Stop Pipeline"
+  },
+  "pipelineFinish": {
+    "title": "Pipeline done · ready to apply",
+    "failedTitle": "Pipeline did not finish · current apply list",
+    "subtitle": "{{count}} application-ready job(s)",
+    "empty": "No application_ready jobs after this run. Rex may have scored below the gate, Dana may not have vetted, Leo may not have generated CVs, or Clara had nothing new to stamp. The Kanban Apply column and Telegram /apply use the same list.",
+    "employer": "Employer",
+    "role": "Role"
   },
   "logs": {
     "title": "Agent Logs",
@@ -480,6 +525,10 @@
   "milo": {
     "title": "Milo",
     "talk": "Talk to Milo",
+    "openDock": "Open Milo chat",
+    "minimize": "Minimize",
+    "popOut": "Pop out",
+    "closePopup": "Close window",
     "you": "You",
     "placeholder": "Ask Milo about your career…",
     "empty": "No conversation yet — LinkedIn username, attach a CV, or say hi.",
@@ -506,6 +555,7 @@
   },
   "telegram": {
     "find": "Telegram",
+    "short": "TG",
     "open": "Open Telegram bot {{handle}} (id {{id}})"
   }
 }

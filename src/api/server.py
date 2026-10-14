@@ -41,15 +41,20 @@ if str(_VALIDATORS_DIR) not in sys.path:
     sys.path.insert(0, str(_VALIDATORS_DIR))
 
 from . import gates  # noqa: E402
+from .funnel_counts import active_job_clause, compute_funnel  # noqa: E402
+from .usage_counts import compute_usage_summary, empty_usage_totals  # noqa: E402
 from .agent_runner import LOG_FILE, runner  # noqa: E402
 from .mdrender import markdown_to_html  # noqa: E402
 from activity_logger import log_system  # noqa: E402
 from .models import (  # noqa: E402
-    AgentRunRequest, AgentStatus, AgentStatusMap, CandidateProfile,
+    AgentRunList, AgentRunOut, AgentRunRequest, AgentStatus, AgentStatusMap,
+    AgentUsageSummary,
+    CandidateProfile,
     CompanyDossierOut, CreateProfileRequest, DossierPayload, FunnelStats,
-    ApplicationFollowUpUpdate, HealthOut, JobCheckResult, JobListResponse,
-    JobOut, JobShelfResponse, JobStatusUpdate, LinkedInImportRequest,
-    LinkedInMcpStatusOut, Profile, TelegramBotOut,
+    ApplicationFollowUpUpdate, ApplyReadyJobOut, HealthOut, JobCheckResult,
+    JobListResponse, JobOut, JobShelfResponse, JobStatusUpdate,
+    LinkedInImportRequest, LinkedInMcpStatusOut, PipelineFinishOverview,
+    Profile, SystemOneStatus, TelegramBotOut,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -424,17 +429,34 @@ def _backfill_posted_at(conn: sqlite3.Connection) -> None:
 
 def _active_job_clause(alias: str = "") -> tuple[str, list]:
     """SQL fragment: visible on the main kanban (score ≥ 35, not expired, not unconsiderable)."""
-    prefix = f"{alias}." if alias else ""
-    return (
-        f"COALESCE({prefix}match_score, 0) >= ? AND COALESCE({prefix}expired, 0) = 0 "
-        f"AND UPPER(COALESCE({prefix}user_status, '')) != ?",
-        [gates.DASHBOARD_MIN_DISPLAY_SCORE, gates.USER_STATUS_UNCONSIDERABLE],
-    )
+    return active_job_clause(alias)
 
 
 @app.on_event("startup")
 def _on_startup() -> None:
     _ensure_expired_column()
+    from obsidian_vault import export_obsidian_foundation
+
+    try:
+        stats = export_obsidian_foundation()
+        log_system(
+            "Obsidian foundation: "
+            f"{stats['companies']} companies, {stats['jobs']} jobs, "
+            f"{stats['skills_created']} new skills"
+        )
+    except (OSError, sqlite3.Error) as exc:
+        log_system(f"Obsidian foundation skipped: {exc}")
+    from .telegram_inbox import start_clara_inbox
+
+    start_clara_inbox()
+    log_system("Telegram Clara inbox poller started (if bot token configured)")
+
+
+@app.on_event("shutdown")
+def _on_shutdown() -> None:
+    from .telegram_inbox import stop_clara_inbox
+
+    stop_clara_inbox()
 
 
 def _connect_rw() -> sqlite3.Connection:
@@ -1001,7 +1023,7 @@ def list_jobs(
     q: Optional[str] = Query(None),
     view: Literal["active", "all"] = Query("active"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(50, ge=1, le=2000),
 ) -> JobListResponse:
     conn = _connect()
     try:
@@ -1299,6 +1321,7 @@ def update_job_follow_up(job_id: int, body: ApplicationFollowUpUpdate) -> JobOut
             company=job.company_name or "",
             title=job.job_title,
             extra=" — ".join(part for part in extra_bits if part),
+            job_id=int(job.id),
         )
     except Exception:
         pass
@@ -1307,8 +1330,13 @@ def update_job_follow_up(job_id: int, body: ApplicationFollowUpUpdate) -> JobOut
 
 @app.post("/api/jobs/{job_id}/check", response_model=JobCheckResult)
 def check_job(job_id: int) -> JobCheckResult:
-    """Check the source URL: HTTP status plus whether the stored title is on the page."""
-    from listing_filters import listing_text_supports_title, listing_url_problem, normalize_listing_url
+    """Check the source URL using listing_live_check (banner vs in-house unfound)."""
+    from listing_filters import (
+        listing_live_check,
+        listing_text_supports_title,
+        listing_url_problem,
+        normalize_listing_url,
+    )
 
     conn = _connect()
     try:
@@ -1325,43 +1353,28 @@ def check_job(job_id: int) -> JobCheckResult:
     if not url:
         return JobCheckResult(exists=False, reason="no job_url", expired_suggested=True)
     shape = listing_url_problem(url)
-    if shape:
-        return JobCheckResult(
-            exists=False,
-            reason=shape,
-            final_url=url,
-            expired_suggested=True,
-            listing_mismatch=True,
-            title_found=False,
-        )
-    ok, status_code, final_url, reason, text = _fetch_job_page(url)
-    if not ok:
-        return JobCheckResult(
-            exists=False,
-            status_code=status_code,
-            reason=reason,
-            final_url=final_url,
-            expired_suggested=True,
-        )
-    title_ok = listing_text_supports_title(text, title)
-    if not title_ok:
-        return JobCheckResult(
-            exists=True,
-            status_code=status_code,
-            reason="page loaded but the stored job title is not on it",
-            final_url=final_url,
-            expired_suggested=True,
-            listing_mismatch=True,
-            title_found=False,
-        )
+    ok, status_code, final_url, _fetch_reason, text = (
+        (False, None, url, "not fetched", "")
+        if shape
+        else _fetch_job_page(url)
+    )
+    still, expire, reason = listing_live_check(
+        url,
+        None if shape else ok,
+        status_code,
+        text,
+        title,
+        url_problem=shape,
+    )
+    title_ok = False if shape else (listing_text_supports_title(text, title) if text else None)
     return JobCheckResult(
-        exists=True,
+        exists=still,
         status_code=status_code,
         reason=reason,
         final_url=final_url,
-        expired_suggested=False,
-        listing_mismatch=False,
-        title_found=True,
+        expired_suggested=expire,
+        listing_mismatch=bool(shape) or title_ok is False,
+        title_found=title_ok,
     )
 
 
@@ -1533,6 +1546,17 @@ def get_job_checklist(job_id: int):
     if not path:
         raise HTTPException(404, "no application checklist generated for this job yet")
     return HTMLResponse(markdown_to_html(path.read_text(encoding="utf-8")))
+
+
+@app.post("/api/telegram/apply-overview")
+def send_telegram_apply_overview():
+    """Send the Apply overview (prev/next, 2h). Inbox must be hosting for buttons."""
+    from .apply_overview import send_apply_overview
+
+    result = send_apply_overview()
+    if not result.get("ok"):
+        raise HTTPException(503, result.get("error") or "Telegram send failed")
+    return result
 
 
 @app.post("/api/jobs/{job_id}/send-telegram")
@@ -1800,6 +1824,55 @@ def stop_agent(agent_key: str):
     return runner.stop(agent_key)
 
 
+@app.get("/api/agents/runs", response_model=AgentRunList)
+def agents_runs(limit: int = Query(40, ge=1, le=200)) -> AgentRunList:
+    """Recent agent executions with token and Tavily credit estimates."""
+    if not DB_PATH.is_file():
+        return AgentRunList(items=[])
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, agent, pipeline_id, started_at, finished_at,
+                       prompt_tokens, completion_tokens, total_tokens, llm_calls,
+                       tavily_calls, tavily_credits_est, tavily_search_calls,
+                       tavily_extract_calls
+                FROM agent_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return AgentRunList(items=[])
+        items = [AgentRunOut(**dict(row)) for row in rows]
+        return AgentRunList(items=items)
+    finally:
+        conn.close()
+
+
+@app.get("/api/agents/runs/summary", response_model=AgentUsageSummary)
+def agents_runs_summary() -> AgentUsageSummary:
+    """Lifetime and last-7-day token / Tavily totals. Asia/Hong_Kong window.
+
+    # Ref: agent_runs — dashboard usage strip
+    """
+    empty = AgentUsageSummary(lifetime=empty_usage_totals(), week=empty_usage_totals())
+    if not DB_PATH.is_file():
+        return empty
+    week_start = (
+        datetime.now(timezone(timedelta(hours=8))) - timedelta(days=7)
+    ).isoformat(timespec="seconds")
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        return compute_usage_summary(conn, week_start)
+    finally:
+        conn.close()
+
+
 @app.get("/api/agents/status", response_model=AgentStatusMap)
 def agents_status() -> AgentStatusMap:
     m = runner.status_all()
@@ -1827,6 +1900,24 @@ def stop_pipeline():
 @app.get("/api/pipeline/status")
 def pipeline_status():
     return runner.pipeline_status()
+
+
+@app.get("/api/pipeline/apply-overview", response_model=PipelineFinishOverview)
+def pipeline_apply_overview() -> PipelineFinishOverview:
+    """All current application_ready jobs, plus last pipeline-finish stamp."""
+    from .apply_overview import list_apply_jobs, load_finish_snapshot
+
+    jobs = list_apply_jobs(limit=80)
+    snap = load_finish_snapshot()
+    return PipelineFinishOverview(
+        finished_at=snap.finished_at if snap else None,
+        success=snap.success if snap else True,
+        error=snap.error if snap else None,
+        source=snap.source if snap else None,
+        telegram_ok=snap.telegram_ok if snap else None,
+        application_ready=len(jobs),
+        jobs=[ApplyReadyJobOut.model_validate(row) for row in jobs],
+    )
 
 
 def _read_log_tail(path: Path, tail: int) -> tuple[list[str], int]:
@@ -1889,33 +1980,17 @@ def _parse_log_source(line: str) -> str:
 
 @app.get("/api/stats/funnel", response_model=FunnelStats)
 def funnel() -> FunnelStats:
+    """Header KPIs for kanban-visible jobs only (not expired / shelf)."""
     conn = _connect()
     try:
-        def count(sql, params=()):
-            try:
-                return int(conn.execute(sql, params).fetchone()[0])
-            except Exception:
-                return 0
-        active_sql, active_params = _active_job_clause()
-        found = count(
-            f"SELECT COUNT(*) FROM job_postings WHERE {active_sql}",
-            tuple(active_params),
-        )
-        score_ge_80 = count(
-            f"SELECT COUNT(*) FROM job_postings WHERE {active_sql} AND match_score >= ?",
-            tuple(active_params + [gates.AGENT3_CV_MIN_SCORE]),
-        )
-        vetted = count(
-            "SELECT COUNT(DISTINCT company_name) FROM company_dossiers WHERE vetting_verdict = ?",
-            (gates.AGENT3_CV_REQUIRED_VERDICT,),
-        )
-        cv_gen = count(
-            "SELECT COUNT(*) FROM job_postings WHERE cv_status IN ('MATERIALS_GENERATED','MATERIALS_RENDERED')"
-        )
-        app_ready = count("SELECT COUNT(*) FROM job_postings WHERE application_ready = 1")
+        return FunnelStats.model_validate(compute_funnel(conn))
+    except sqlite3.Error:
         return FunnelStats(
-            found=found, score_ge_80=score_ge_80, vetted_proceed=vetted,
-            cv_generated=cv_gen, application_ready=app_ready,
+            found=0,
+            score_ge_80=0,
+            vetted_proceed=0,
+            cv_generated=0,
+            application_ready=0,
         )
     finally:
         conn.close()
@@ -1936,6 +2011,14 @@ def get_gates():
         "dashboard_min_display_score": gates.DASHBOARD_MIN_DISPLAY_SCORE,
         "user_status_unconsiderable": gates.USER_STATUS_UNCONSIDERABLE,
     }
+
+
+@app.get("/api/system-one", response_model=SystemOneStatus)
+def get_system_one() -> SystemOneStatus:
+    """Laya System One status. Heuristic until LAYA_BASE_URL / TYPESAFE_API_KEY."""
+    from system_one import status_snapshot
+
+    return SystemOneStatus.model_validate(status_snapshot())
 
 
 # ---------------------------------------------------------------------------

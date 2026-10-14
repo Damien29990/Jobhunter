@@ -35,17 +35,19 @@ def test_sweep_expires_visible_empty_url_skips_shelf(tmp_path, monkeypatch) -> N
             company_name TEXT,
             match_score INTEGER,
             expired INTEGER,
-            user_status TEXT
+            user_status TEXT,
+            application_status TEXT
         )
         """
     )
     conn.executemany(
-        "INSERT INTO job_postings VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO job_postings VALUES (?,?,?,?,?,?,?,?)",
         [
-            (1, "", "Visible dead", "Acme", 80, 0, None),
-            (2, "https://example.com/job", "Hidden low", "Acme", 10, 0, None),
-            (3, "", "Hidden uncon", "Acme", 90, 0, "UNCONSIDERABLE"),
-            (4, "", "Already expired", "Acme", 80, 1, None),
+            (1, "", "Visible dead", "Acme", 80, 0, None, None),
+            (2, "https://example.com/job", "Hidden low", "Acme", 10, 0, None, None),
+            (3, "", "Hidden uncon", "Acme", 90, 0, "UNCONSIDERABLE", None),
+            (4, "", "Already expired", "Acme", 80, 1, None, None),
+            (5, "", "Applied empty url", "Acme", 90, 0, None, "APPLIED"),
         ],
     )
     conn.commit()
@@ -61,3 +63,4 @@ def test_sweep_expires_visible_empty_url_skips_shelf(tmp_path, monkeypatch) -> N
     assert flags[1] == 1
     assert flags[2] == 0
     assert flags[3] == 0
+    assert flags[5] == 0

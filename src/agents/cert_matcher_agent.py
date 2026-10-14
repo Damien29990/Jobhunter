@@ -25,6 +25,10 @@ AGENT_DIR = Path(__file__).resolve().parent
 if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
+_VALIDATORS_DIR = AGENT_DIR.parent / "validators"
+if str(_VALIDATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(_VALIDATORS_DIR))
+
 from talent_scout_agent import (  # noqa: E402
     DEFAULT_DB_PATH,
     DEFAULT_PROFILE_PATH,
@@ -40,7 +44,7 @@ from talent_scout_agent import (  # noqa: E402
 from activity_logger import log_activity  # noqa: E402
 from llm_usage import finalize_usage, instrument_openai  # noqa: E402
 from milo_context import milo_readme_prompt_block  # noqa: E402
-from notify import notify_application_package, notify_job_update  # noqa: E402
+from notify import notify_apply_overview, notify_job_update  # noqa: E402
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MIN_MATCH_SCORE = 80
@@ -356,6 +360,7 @@ class CertMatcherAgent:
                    match_score, cv_pdf_path, cv_typ_path
             FROM job_postings
             WHERE match_score >= ?
+              AND COALESCE(expired, 0) = 0
               AND cv_status = ?
               AND COALESCE(application_ready, 0) = 0
             ORDER BY match_score DESC
@@ -517,9 +522,11 @@ JSON Schema:
             )
         except Exception as exc:
             print(f"⚠️  [DeepSeek call failed] {job['company_name']}: {exc}")
+            log_activity("Clara", f"DeepSeek audit failed for job #{job.get('id')}: {exc}", level="ERROR")
             return None
         raw = response.choices[0].message.content
         if not raw:
+            log_activity("Clara", f"DeepSeek empty audit for job #{job.get('id')}", level="ERROR")
             return None
         try:
             payload = coerce_readiness_payload(
@@ -528,6 +535,11 @@ JSON Schema:
             return ApplicationReadinessPack.model_validate(payload)
         except Exception as exc:
             print(f"⚠️  [JSON parse skipped] {job['company_name']}: {exc}")
+            log_activity(
+                "Clara",
+                f"Audit JSON invalid for job #{job.get('id')}: {exc}",
+                level="ERROR",
+            )
             return None
 
     # -- markdown export -----------------------------------------------------
@@ -718,6 +730,20 @@ JSON Schema:
         """detect → audit → render → export → update DB for one job."""
         company = job["company_name"]
         title = job["job_title"]
+        try:
+            return self._generate_for_job_inner(job)
+        except Exception as exc:
+            log_activity(
+                "Clara",
+                f"Crashed on job #{job.get('id')} {company} — {title}: {exc}",
+                level="ERROR",
+            )
+            print(f"⚠️  [Clara crash] job #{job.get('id')}: {exc}")
+            return None
+
+    def _generate_for_job_inner(self, job: dict) -> Optional[dict]:
+        company = job["company_name"]
+        title = job["job_title"]
         print(f"\n🧾 [Auditing application] {company} — {title} (match={job['match_score']})")
         log_activity(
             "Clara",
@@ -734,6 +760,11 @@ JSON Schema:
         pack = self.audit_job(job, channel_hint)
         if not pack:
             self._update_status(job["id"], False, None)
+            log_activity(
+                "Clara",
+                f"Audit produced no pack for job #{job['id']} {company} — {title}",
+                level="ERROR",
+            )
             return None
         log_activity(
             "Clara",
@@ -748,18 +779,10 @@ JSON Schema:
             "Clara",
             f"DB updated: application_ready=True for job #{job['id']}",
         )
-        notify_job_update(
+        log_activity(
             "Clara",
-            "Application ready",
-            company=company,
-            title=title,
-            url=job.get("job_url") or "",
-            extra=pack.submission_audit.application_channel,
-        )
-        self._send_pack_to_telegram(
-            job,
-            checklist_path=str(checklist_path),
-            channel=pack.submission_audit.application_channel,
+            f"Pack ready for job #{job['id']} ({pack.submission_audit.application_channel}); "
+            "Telegram overview sent after the Clara run",
         )
         return {
             "job_id": job["id"],
@@ -778,24 +801,32 @@ JSON Schema:
         force: bool = False,
     ) -> int:
         """Audit application readiness for all jobs whose CV is already generated."""
+        log_activity(
+            "Clara",
+            f"Agent started"
+            f"{f' job_id={job_id}' if job_id is not None else ''}"
+            f"{', force' if force else ''}",
+        )
         jobs: List[dict] = []
-        if job_id is not None and force:
+        if job_id is not None:
             loaded = self.fetch_job(job_id)
             if loaded:
                 jobs = [loaded]
+            else:
+                log_activity("Clara", f"Job #{job_id} not found in SQLite", level="WARN")
         else:
             jobs = self.list_ready_jobs(min_score=min_score)
-            if job_id is not None:
-                jobs = [j for j in jobs if j["id"] == job_id]
         if company:
             key = company.strip().lower()
             jobs = [j for j in jobs if key in (j["company_name"] or "").lower()]
         if not jobs:
-            print(
-                "ℹ️  No ready jobs found. Need job_postings.match_score >= "
-                f"{min_score} with cv_status = 'MATERIALS_GENERATED' "
-                "and application_ready not already set."
+            msg = (
+                "No ready jobs found. Need match_score >= "
+                f"{min_score}, cv_status MATERIALS_GENERATED, not expired, "
+                "and application_ready not already set (or pass --job-id)."
             )
+            print(f"ℹ️  {msg}")
+            log_activity("Clara", msg, level="WARN")
             return 0
         print(f"📋 {len(jobs)} ready job(s) queued for application audit.")
         audited = 0
@@ -811,6 +842,11 @@ JSON Schema:
             "Jobs finished",
             extra=f"{audited} application pack(s) ready",
         )
+        try:
+            if not os.environ.get("JOBHUNTER_PIPELINE_RUN_ID"):
+                notify_apply_overview()
+        except Exception as exc:
+            log_activity("Clara", f"Apply overview failed: {exc}", level="WARN")
         return audited
 
 
@@ -843,14 +879,18 @@ if __name__ == "__main__":
     if not deepseek_key:
         raise SystemExit("Set DEEPSEEK_API_KEY in the environment or a .env file.")
     print(f"Using DeepSeek {os.environ.get('DEEPSEEK_MODEL', DEEPSEEK_CHAT_MODEL)} @ {DEEPSEEK_BASE_URL}")
-    agent = CertMatcherAgent(
-        deepseek_api_key=deepseek_key,
-        profile_path=Path(args.profile),
-    )
-    agent.run_pipeline(
-        min_score=args.min_score,
-        job_id=args.job_id,
-        company=args.company,
-        force=args.force,
-    )
-    finalize_usage("Clara")
+    try:
+        agent = CertMatcherAgent(
+            deepseek_api_key=deepseek_key,
+            profile_path=Path(args.profile),
+        )
+        agent.run_pipeline(
+            min_score=args.min_score,
+            job_id=args.job_id,
+            company=args.company,
+            force=args.force,
+        )
+        finalize_usage("Clara")
+    except Exception as exc:
+        log_activity("Clara", f"Pipeline crashed: {exc}", level="ERROR")
+        raise

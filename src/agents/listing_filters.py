@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
+from typing import Literal
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
+
+ListingHostKind = Literal["public_board", "linkedin", "in_house"]
 
 JD_FULL_MAX = 200_000
 
@@ -112,6 +115,24 @@ _POSTED_AGO_TEXT = re.compile(
     re.I,
 )
 _JSON_DATE_POSTED = re.compile(r'"datePosted"\s*:\s*"([^"]+)"', re.I)
+_JSON_VALID_THROUGH = re.compile(r'"validThrough"\s*:\s*"([^"]+)"', re.I)
+
+# Aggregators that keep a stable vacancy id after the ad closes (200 + banner).
+# Ref: listing_live_check — public board vs in-house ATS
+_PUBLIC_BOARD_HOST_NEEDLES = (
+    "jobsdb.com",
+    "ctgoodjobs.hk",
+    "talentjobseeker.hkstp.org",
+    "efinancialcareers.hk",
+    "efinancialcareers.com",
+    "recruit.com.hk",
+    "cpjobs.com",
+    "jobs.gov.hk",
+    "labour.gov.hk",
+    "csb.gov.hk",
+    "techinasia.com",
+    "hkicpa.org.hk",
+)
 
 
 def extract_host(url: str) -> str:
@@ -121,6 +142,22 @@ def extract_host(url: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host
+
+
+def listing_host_kind(url: str) -> ListingHostKind:
+    """Classify a vacancy URL for expiry rules.
+
+    Public boards keep a stable job id and often return 200 with a closed
+    banner. In-house ATS / careers sites rotate requisition ids, so 404 and
+    generic unfound shells are unknown, not expiry.
+    # Ref: listing_live_check
+    """
+    host = extract_host(url)
+    if "linkedin.com" in host:
+        return "linkedin"
+    if any(needle in host for needle in _PUBLIC_BOARD_HOST_NEEDLES):
+        return "public_board"
+    return "in_house"
 
 
 def is_phenom_job_url(url: str) -> bool:
@@ -569,17 +606,206 @@ def listing_text_supports_title(page_text: str, title: str) -> bool:
     return hits >= max(2, (len(tokens) + 1) // 2)
 
 
+_CLOSED_APPLY_RE = re.compile(
+    r"no longer accepting applications|"
+    r"no longer accepting applicants|"
+    r"this job is no longer available|"
+    r"this job is no longer advertised|"
+    r"no longer advertised|"
+    r"sorry[,.\s].{0,40}no longer available|"
+    r"this job is no longer accepting|"
+    r"this job posting is no longer|"
+    r"job is no longer available|"
+    r"no longer available on linkedin|"
+    r"this (?:job|position|vacancy|advertisement|listing) has (?:expired|closed|been filled)|"
+    r"this position has been filled|"
+    r"applications have closed|"
+    r"applications (?:are|have) (?:now )?closed|"
+    r"this job is closed|"
+    r"vacancy closed|"
+    r"ad has expired|"
+    r"listing has expired|"
+    r"不再接受申請|不再接受報名|此職缺已關閉|職位已關閉|已停止招聘|"
+    r"此職位已過期|職位已過期|廣告已過期|已截止申請|招聘已結束|"
+    r"此職位已經關閉|職缺已關閉|已結束招聘|"
+    r"此職位已停止刊登|已停止刊登|不再刊登",
+    re.I,
+)
+
+# SEEK/JobsDB still return HTTP 200 for closed ads; markers are in HTML + Apollo JSON.
+# Ref: https://hk.jobsdb.com/job/93429744 — expiredJobPage / isExpired
+_JOBSDB_EXPIRED_MARKERS_RE = re.compile(
+    r'data-automation=["\']expiredJobPage["\']|'
+    r'"isExpired"\s*:\s*true|'
+    r'"jobStatus"\s*:\s*"expired"|'
+    r'"status"\s*:\s*"Expired"',
+    re.I,
+)
+
+
+def jobsdb_expired_in_text(url: str, text: str) -> bool:
+    """True for SEEK JobsDB expired-ad HTML/JSON, even when HTTP is 200."""
+    if "jobsdb.com" not in extract_host(url):
+        return False
+    return bool(_JOBSDB_EXPIRED_MARKERS_RE.search(text or ""))
+
+
+_UNFOUND_PAGE_RE = re.compile(
+    r"job not found|vacancy not found|position not found|"
+    r"page not found|this job (?:does not|doesn't) exist|"
+    r"we (?:can(?:no|'?)t|could not) find (?:this )?(?:job|vacancy)|"
+    r"the job you (?:are|'re) looking for|"
+    r"no longer exists|"
+    r"找不到(?:此)?職位|找不到職缺|職缺不存在|職位不存在|"
+    r"頁面不存在|沒有此職位|查無此職",
+    re.I,
+)
+
+
+def applications_closed_in_text(text: str) -> bool:
+    """True when the listing copy says applications are closed.
+
+    # Ref: LinkedIn Easy Apply — closed jobs still appear in Tavily
+    """
+    return bool(_CLOSED_APPLY_RE.search(text or ""))
+
+
+def page_looks_unfound(text: str) -> bool:
+    """True for generic not-found shells, not a closed-apply banner.
+
+    # Ref: in-house ATS dynamic requisition ids
+    """
+    return bool(_UNFOUND_PAGE_RE.search(text or ""))
+
+
+def json_ld_valid_through_expired(page_text: str) -> bool:
+    """True when JSON-LD validThrough is in the past (Asia/Hong_Kong).
+
+    # Ref: schema.org JobPosting validThrough
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    match = _JSON_VALID_THROUGH.search(page_text or "")
+    if not match:
+        return False
+    raw = (match.group(1) or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    hk = ZoneInfo("Asia/Hong_Kong")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=hk)
+    return datetime.now(hk) > parsed.astimezone(hk)
+
+
+def linkedin_apply_closed(url: str, text: str) -> str | None:
+    """Reason string if this LinkedIn vacancy no longer accepts applications."""
+    if not linkedin_job_id(url):
+        return None
+    if applications_closed_in_text(text):
+        return "LinkedIn no longer accepting applications"
+    return None
+
+
+def linkedin_live_check(
+    http_ok: bool | None,
+    status_code: int | None,
+    page_text: str,
+) -> tuple[bool, bool, str]:
+    """Expire LinkedIn only on 404/410 or closed copy — not login walls.
+
+    Unauthenticated GET often 200 without the job title; that must not expire.
+    Returns (still_listed, should_expire, reason).
+    # Ref: listing_sweep / Dana check_listing_still_open
+    """
+    if status_code in (404, 410):
+        return False, True, f"HTTP {status_code}"
+    if applications_closed_in_text(page_text):
+        return False, True, "LinkedIn no longer accepting applications"
+    if http_ok is None:
+        return False, False, "not fetched"
+    if not http_ok:
+        return False, False, f"HTTP {status_code or 'error'}"
+    return True, False, "ok"
+
+
+def listing_live_check(
+    url: str,
+    http_ok: bool | None,
+    status_code: int | None,
+    page_text: str,
+    title: str = "",
+    url_problem: str | None = None,
+) -> tuple[bool, bool, str]:
+    """Decide live / expire / unknown from host kind, HTTP, and page copy.
+
+    Public boards: expire on 404/410, closed banner, past validThrough, or
+    unfound copy. Title missing without those signals stays unknown.
+    In-house ATS/careers: expire only on explicit closed copy or past
+    validThrough. 404 and unfound shells are unknown (dynamic ids).
+    LinkedIn: closed copy or 404/410 only (login walls stay live).
+    Returns (still_listed, should_expire, reason).
+    # Ref: listing_sweep / Dana check_listing_still_open
+    """
+    if url_problem:
+        return False, True, url_problem
+    kind = listing_host_kind(url)
+    blob = page_text or ""
+    title_found: bool | None = None
+    if blob.strip() and (title or "").strip():
+        title_found = listing_text_supports_title(blob, title)
+    if kind == "linkedin":
+        return linkedin_live_check(http_ok, status_code, blob)
+    closed = applications_closed_in_text(blob) or jobsdb_expired_in_text(url, blob)
+    past_valid = json_ld_valid_through_expired(blob)
+    if kind == "in_house":
+        if closed:
+            return False, True, "listing copy says applications are closed"
+        if past_valid:
+            return False, True, "JSON-LD validThrough has passed"
+        if status_code in (404, 410):
+            return False, False, f"in-house HTTP {status_code} (dynamic id, not expiry)"
+        if http_ok is None:
+            return False, False, "not fetched"
+        if not http_ok:
+            return False, False, f"HTTP {status_code or 'error'}"
+        if page_looks_unfound(blob) and title_found is not True:
+            return False, False, "in-house unfound page (dynamic id, not expiry)"
+        if title_found is False:
+            return False, False, "in-house page does not contain job title"
+        return True, False, "ok"
+    if status_code in (404, 410):
+        return False, True, f"HTTP {status_code}"
+    if closed:
+        return False, True, "listing copy says applications are closed"
+    if past_valid:
+        return False, True, "JSON-LD validThrough has passed"
+    if http_ok is None:
+        return False, False, "not fetched"
+    if not http_ok:
+        return False, False, f"HTTP {status_code or 'error'}"
+    if page_looks_unfound(blob):
+        return False, True, "public board unfound or removed listing"
+    if title_found is False:
+        return False, False, "page does not contain job title"
+    return True, False, "ok"
+
+
 def listing_check_verdict(
     url_problem: str | None,
     http_ok: bool | None,
     status_code: int | None,
     title_found: bool | None,
 ) -> tuple[bool, bool, str]:
-    """Decide if a vacancy is still listed and whether to mark expired.
+    """Legacy network/shape verdict without host kind.
 
-    Network/auth failures skip research but do not expire (unknown).
-    Search pages, 404/410, and title-missing 200 pages expire.
-
+    Search-page URLs still expire. 404/410 expire only in this host-agnostic
+    helper — callers with a real URL must use listing_live_check. Title-missing
+    200 pages are unknown (may be a login wall or SPA shell).
     Returns (still_listed, should_expire, reason).
     # Ref: Dana pre-research listing check
     """
@@ -592,7 +818,7 @@ def listing_check_verdict(
     if not http_ok:
         return False, False, f"HTTP {status_code or 'error'}"
     if title_found is False:
-        return False, True, "page does not contain job title"
+        return False, False, "page does not contain job title"
     return True, False, "ok"
 
 

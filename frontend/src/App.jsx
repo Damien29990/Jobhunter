@@ -3,7 +3,7 @@
 // shows the exact command to start FastAPI. This is the most common reason
 // "talking to an agent" (clicking RUN) fails — the backend isn't running.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TriangleAlert, CircleCheck, X } from 'lucide-react'
 import Header from './components/Header'
@@ -12,16 +12,29 @@ import PipelineKanban from './components/PipelineKanban'
 import DetailDrawer from './components/DetailDrawer'
 import TutorialModal from './components/TutorialModal'
 import AgentLogConsole from './components/AgentLogConsole'
+import AgentUsagePanel from './components/AgentUsagePanel'
 import ProfileEditor from './components/ProfileEditor'
 import MiloChat from './components/MiloChat'
+import PipelineFinishOverview from './components/PipelineFinishOverview'
 import { api } from './lib/api'
+
+function searchParams() {
+  try {
+    return new URLSearchParams(window.location.search)
+  } catch {
+    return new URLSearchParams()
+  }
+}
 
 export default function App() {
   const { t } = useTranslation()
-  const [candidateId, setCandidateId] = useState(null)
+  const miloPopup = searchParams().get('milo') === '1'
+  const [candidateId, setCandidateId] = useState(() => searchParams().get('candidate') || null)
   const [funnel, setFunnel] = useState(null)
   const [agentStatus, setAgentStatus] = useState(null)
   const [agentLog, setAgentLog] = useState(null)
+  const [agentRuns, setAgentRuns] = useState(null)
+  const [usageSummary, setUsageSummary] = useState(null)
   const [selectedJobId, setSelectedJobId] = useState(null)
   const [jobsByStage, setJobsByStage] = useState({})
   const [navStage, setNavStage] = useState(null)
@@ -31,6 +44,9 @@ export default function App() {
   const [dismissedBanner, setDismissedBanner] = useState(false)
   const [editingProfile, setEditingProfile] = useState(null) // null | candidateId | 'new'
   const [talkingMilo, setTalkingMilo] = useState(false)
+  const [finishOverview, setFinishOverview] = useState(null)
+  const [pipelineBusy, setPipelineBusy] = useState(false)
+  const pipelineBusyRef = useRef(false)
 
   const agentsBusy = Object.values(agentStatus || {}).some((a) => a?.state === 'WORKING')
 
@@ -38,25 +54,38 @@ export default function App() {
     let active = true
     async function poll() {
       try {
-        const [h, f, s, l] = await Promise.all([
+        const [h, f, s, l, r, u, p, sched] = await Promise.all([
           api.health(),
           api.funnel().catch(() => null),
           api.agentStatus().catch(() => null),
           api.agentLog().catch(() => null),
+          api.agentRuns(40).catch(() => null),
+          api.agentRunsSummary().catch(() => null),
+          api.pipelineStatus().catch(() => null),
+          api.schedulerStatus?.().catch(() => null),
         ])
         if (!active) return
         setBackendOnline(true)
         setFunnel(f)
         setAgentStatus(s)
         setAgentLog(l)
+        setAgentRuns(r)
+        setUsageSummary(u)
+        const busy = p?.state === 'RUNNING' || !!sched?.pipeline_running
+        if (pipelineBusyRef.current && !busy) {
+          const overview = await api.pipelineApplyOverview().catch(() => null)
+          if (active && overview) setFinishOverview(overview)
+        }
+        pipelineBusyRef.current = busy
+        setPipelineBusy(busy)
       } catch {
         if (active) setBackendOnline(false)
       }
     }
     poll()
-    const id = setInterval(poll, agentsBusy ? 1000 : 4000)
+    const id = setInterval(poll, agentsBusy || pipelineBusy ? 1000 : 4000)
     return () => { active = false; clearInterval(id) }
-  }, [tick, agentsBusy])
+  }, [tick, agentsBusy, pipelineBusy])
 
   const handleRunAgent = useCallback((agentKey) => setTutorialAgent(agentKey), [])
   const handleStopAgent = useCallback(async (agentKey) => {
@@ -76,6 +105,17 @@ export default function App() {
 
   const showBanner = backendOnline === false && !dismissedBanner
 
+  if (miloPopup) {
+    return (
+      <MiloChat
+        candidateId={candidateId}
+        variant="popup"
+        open
+        onClose={() => window.close()}
+      />
+    )
+  }
+
   return (
     <div className="min-h-screen overflow-x-hidden">
       <div className="px-4 pt-4 max-w-[1400px] mx-auto">
@@ -83,9 +123,9 @@ export default function App() {
         funnel={funnel}
         candidateId={candidateId}
         onCandidateChange={setCandidateId}
-        onEditProfile={() => setEditingProfile(candidateId)}
+        onEditProfile={(id) => setEditingProfile(id)}
         onNewPerson={() => setEditingProfile('new')}
-        onTalkMilo={() => setTalkingMilo(true)}
+        tick={tick}
       />
 
       {showBanner && (
@@ -140,6 +180,8 @@ export default function App() {
         tick={tick}
       />
 
+      <AgentUsagePanel runs={agentRuns} summary={usageSummary} agentStatus={agentStatus} />
+
       <AgentLogConsole agentStatus={agentStatus} agentLog={agentLog} />
 
       <footer className="mt-6 mb-2 text-center font-mono text-[11px] text-slate-700">
@@ -157,6 +199,19 @@ export default function App() {
           onClose={() => { setSelectedJobId(null); setNavStage(null) }}
           onSelectJob={handleSelectJob}
           onStageStarted={handleStarted}
+        />
+      )}
+
+      {finishOverview && (
+        <PipelineFinishOverview
+          overview={finishOverview}
+          onClose={() => setFinishOverview(null)}
+          onSelectJob={(job) => {
+            if (!job?.id) return
+            setSelectedJobId(job.id)
+            setNavStage('applied')
+            setFinishOverview(null)
+          }}
         />
       )}
 
@@ -178,12 +233,12 @@ export default function App() {
         />
       )}
 
-      {talkingMilo && (
-        <MiloChat
-          candidateId={candidateId}
-          onClose={() => setTalkingMilo(false)}
-        />
-      )}
+      <MiloChat
+        candidateId={candidateId}
+        open={talkingMilo}
+        onOpen={() => setTalkingMilo(true)}
+        onClose={() => setTalkingMilo(false)}
+      />
     </div>
   )
 }

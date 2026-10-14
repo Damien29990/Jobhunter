@@ -17,10 +17,15 @@ AGENT_DIR = Path(__file__).resolve().parent
 if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
+_VALIDATORS_DIR = AGENT_DIR.parent / "validators"
+if str(_VALIDATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(_VALIDATORS_DIR))
+
 from listing_filters import (  # noqa: E402
     clip_listing_text,
     display_listing_title,
     is_junk_job_title,
+    linkedin_apply_closed,
     listing_url_problem,
     normalize_listing_url,
     parse_posted_at,
@@ -57,10 +62,16 @@ from activity_logger import log_activity  # noqa: E402
 from llm_usage import finalize_usage  # noqa: E402
 from milo_context import load_milo_readme, redact_pii_for_search  # noqa: E402
 from notify import notify_job_update  # noqa: E402
+from rex_limits import (  # noqa: E402
+    rex_eval_jd_chars,
+    rex_max_completion_tokens,
+    rex_max_search_tracks,
+    rex_tavily_max_results,
+)
 
 # Ref: career-architect search tracks — diversified paid-employment lanes
-MIN_SEARCH_TRACKS = 5
-MAX_SEARCH_TRACKS = 7
+MAX_SEARCH_TRACKS = rex_max_search_tracks()
+MIN_SEARCH_TRACKS = min(5, MAX_SEARCH_TRACKS)
 DEFAULT_MIN_SCORE = 75
 JOB_SEARCH_CONSTRAINTS = "vacancy hiring -PhD -MPhil"
 
@@ -717,6 +728,7 @@ Example:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.2,
+                max_tokens=rex_max_completion_tokens(),
             )
             raw = response.choices[0].message.content or ""
             plan = CareerHorizonPlan.model_validate(loads_llm_json_object(raw))
@@ -786,6 +798,7 @@ Anonymized profile:
 {json.dumps(user_profile, ensure_ascii=False)}
 {track_blob}
 """
+        prompt_jd = clip_listing_text(jd_text or "", rex_eval_jd_chars())
         try:
             response = self.client.chat.completions.create(
                 model=self.chat_model,
@@ -794,11 +807,12 @@ Anonymized profile:
                     {"role": "user", "content": (
                         f"Board title: {listing_title or '(unknown)'}\n"
                         f"URL: {listing_url or '(unknown)'}\n"
-                        f"職位描述 (JD):\n{jd_text}"
+                        f"職位描述 (JD):\n{prompt_jd}"
                     )},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
+                max_tokens=rex_max_completion_tokens(),
             )
         except Exception as exc:
             print(f"⚠️ [DeepSeek evaluate failed] {exc}")
@@ -847,6 +861,22 @@ Anonymized profile:
         else:
             abstract["pac_deal_breakers"] = []
         return abstract, user_profile or {}
+
+    def _keep_score_expire_linkedin(self, job_id: int, url: str, content: str) -> str:
+        """Keep match_score, shelf the row so Dana/Leo/Clara skip it.
+
+        # Ref: LinkedIn closed Easy Apply still ranked by Tavily
+        """
+        reason = linkedin_apply_closed(url, content)
+        if not reason:
+            return ""
+        self.db_manager.set_job_expired(int(job_id), True)
+        print(f"⌛ [LinkedIn closed] job #{job_id} kept score, marked expired")
+        log_activity(
+            "Rex",
+            f"LinkedIn closed — kept score, expired #{job_id}: {reason}",
+        )
+        return reason
 
     def ingest_job_url(
         self,
@@ -1013,6 +1043,9 @@ Anonymized profile:
             url=url,
             extra=f"suitable={suitable}",
         )
+        closed = self._keep_score_expire_linkedin(job_id, url, content)
+        if closed:
+            suitable = False
         log_activity(
             "Rex",
             f"Ingested pasted job #{job_id}: {company_name} — {stored_title} "
@@ -1114,243 +1147,266 @@ Anonymized profile:
                 *plan.search_tracks,
             ][:MAX_SEARCH_TRACKS]
 
-        discovered_count = 0
-        seen_urls: set[str] = set()
-        extra = list(extra_domains or [])
+        self.begin_rex_tavily_budget()
+        try:
+            discovered_count = 0
+            seen_urls: set[str] = set()
+            extra = list(extra_domains or [])
+            tavily_lane_size = rex_tavily_max_results()
 
-        for track in plan.search_tracks:
-            query = compose_track_query(track)
-            companies = list(dict.fromkeys([*(track.target_companies or []), *(target_companies or [])]))
-            print(f"🛤️  [Track:{track.track_id}|{track.industry}] {query}")
-            log_activity(
-                "Rex",
-                f"Searching track {track.track_id} ({track.industry}): {query}",
-            )
-            try:
-                raw_jobs = self.search_verified_jobs(
-                    query,
-                    target_companies=companies or None,
-                    extra_domains=extra or None,
+            for track in plan.search_tracks:
+                if self.rex_tavily_exhausted():
+                    print("⏹️  [Tavily budget] remaining tracks skipped")
+                    log_activity("Rex", "Tavily cap reached; remaining tracks skipped")
+                    break
+                query = compose_track_query(track)
+                companies = list(dict.fromkeys([*(track.target_companies or []), *(target_companies or [])]))
+                print(f"🛤️  [Track:{track.track_id}|{track.industry}] {query}")
+                log_activity(
+                    "Rex",
+                    f"Searching track {track.track_id} ({track.industry}): {query}",
                 )
-            except Exception as exc:
-                print(f"⚠️ [Track search failed] {track.track_id}: {exc}")
-                log_activity("Rex", f"Track {track.track_id} search failed: {exc}", level="ERROR")
-                continue
-            for raw in raw_jobs:
-                url = normalize_listing_url(raw.get("url") or "") or raw.get("url")
-                if not url or url in seen_urls:
-                    continue
-                if is_academic_non_job_url(url) or is_academic_programme_title(raw.get("title") or ""):
-                    print(f"⏭️  [Not a paid job listing] {raw.get('title')} {url}")
-                    continue
-                url_issue = listing_url_problem(url)
-                if url_issue or not is_job_posting_url(url):
-                    print(f"⏭️  [Not a posting URL] {url_issue or url}")
-                    continue
-                seen_urls.add(url)
-                content = raw.get("raw_content") or raw.get("content") or ""
-                state = self.db_manager.listing_eval_state(url)
-                if state is None:
-                    job_id = self._store_search_jd(
-                        url=url,
-                        title=raw.get("title") or "",
-                        content=content,
-                        source_lane=raw.get("source_lane") or "unknown",
-                        company_name="",
-                        published_date=raw.get("published_date") or "",
+                try:
+                    raw_jobs = self.search_verified_jobs(
+                        query,
+                        max_results_per_lane=tavily_lane_size,
+                        target_companies=companies or None,
+                        extra_domains=extra or None,
                     )
-                    if job_id is None:
+                except Exception as exc:
+                    print(f"⚠️ [Track search failed] {track.track_id}: {exc}")
+                    log_activity("Rex", f"Track {track.track_id} search failed: {exc}", level="ERROR")
+                    continue
+                for raw in raw_jobs:
+                    url = normalize_listing_url(raw.get("url") or "") or raw.get("url")
+                    if not url or url in seen_urls:
                         continue
-                    state = {
-                        "id": job_id,
-                        "match_score": 0,
-                        "recommendation_reason": PENDING_EVAL_REASON,
-                        "company_name": "",
-                        "job_title": raw.get("title") or "",
-                    }
-                    discovered_count += 1
-                already = _listing_already_scored(
-                    state.get("recommendation_reason") or "",
-                    state.get("match_score"),
-                )
-                decision = should_evaluate_jd(
-                    title=raw.get("title") or state.get("job_title") or "",
-                    content=content,
-                    url=url,
-                    already_scored=already,
-                )
-                if not decision.proceed:
-                    print(
-                        f"⏭️  [System One skip evaluate] {decision.reason} {url}"
+                    if is_academic_non_job_url(url) or is_academic_programme_title(raw.get("title") or ""):
+                        print(f"⏭️  [Not a paid job listing] {raw.get('title')} {url}")
+                        continue
+                    url_issue = listing_url_problem(url)
+                    if url_issue or not is_job_posting_url(url):
+                        print(f"⏭️  [Not a posting URL] {url_issue or url}")
+                        continue
+                    seen_urls.add(url)
+                    content = raw.get("raw_content") or raw.get("content") or ""
+                    state = self.db_manager.listing_eval_state(url)
+                    if state is None:
+                        job_id = self._store_search_jd(
+                            url=url,
+                            title=raw.get("title") or "",
+                            content=content,
+                            source_lane=raw.get("source_lane") or "unknown",
+                            company_name="",
+                            published_date=raw.get("published_date") or "",
+                        )
+                        if job_id is None:
+                            continue
+                        state = {
+                            "id": job_id,
+                            "match_score": 0,
+                            "recommendation_reason": PENDING_EVAL_REASON,
+                            "company_name": "",
+                            "job_title": raw.get("title") or "",
+                        }
+                        discovered_count += 1
+                    already = _listing_already_scored(
+                        state.get("recommendation_reason") or "",
+                        state.get("match_score"),
                     )
-                    log_activity(
-                        "Rex",
-                        f"System One skip evaluate ({decision.confidence:.2f}): {decision.reason}",
+                    closed_reason = linkedin_apply_closed(url, content)
+                    if already and closed_reason:
+                        self.db_manager.set_job_expired(int(state["id"]), True)
+                        log_activity(
+                            "Rex",
+                            f"LinkedIn closed — kept score, expired #{state['id']}: {closed_reason}",
+                        )
+                    decision = should_evaluate_jd(
+                        title=raw.get("title") or state.get("job_title") or "",
+                        content=content,
+                        url=url,
+                        already_scored=already,
                     )
-                    if not already:
+                    if not decision.proceed and not (closed_reason and not already):
+                        print(
+                            f"⏭️  [System One skip evaluate] {decision.reason} {url}"
+                        )
+                        log_activity(
+                            "Rex",
+                            f"System One skip evaluate ({decision.confidence:.2f}): {decision.reason}",
+                        )
+                        if not already:
+                            self.db_manager.mark_listing_eval_skipped(
+                                int(state["id"]),
+                                f"system_one_skip: {decision.reason}",
+                            )
+                        stamp = parse_posted_at(raw.get("published_date") or "", content)
+                        if stamp:
+                            self.db_manager.fill_posted_at(int(state["id"]), stamp)
+                        continue
+
+                    try:
+                        eval_res = self.evaluate_job(
+                            content,
+                            abstract,
+                            search_track=track,
+                            listing_title=raw.get("title") or "",
+                            listing_url=url,
+                        )
+                    except Exception as exc:
+                        print(f"⚠️ [Evaluate skipped] {url}: {exc}")
+                        log_activity("Rex", f"Evaluate skipped for {url}: {exc}", level="WARN")
+                        continue
+                    if not eval_res or not eval_res.is_valid_job:
                         self.db_manager.mark_listing_eval_skipped(
                             int(state["id"]),
-                            f"system_one_skip: {decision.reason}",
+                            "system_one_skip: not a valid paid job",
                         )
-                    stamp = parse_posted_at(raw.get("published_date") or "", content)
-                    if stamp:
-                        self.db_manager.fill_posted_at(int(state["id"]), stamp)
-                    continue
-
-                try:
-                    eval_res = self.evaluate_job(
-                        content,
-                        abstract,
-                        search_track=track,
-                        listing_title=raw.get("title") or "",
-                        listing_url=url,
-                    )
-                except Exception as exc:
-                    print(f"⚠️ [Evaluate skipped] {url}: {exc}")
-                    log_activity("Rex", f"Evaluate skipped for {url}: {exc}", level="WARN")
-                    continue
-                if not eval_res or not eval_res.is_valid_job:
-                    self.db_manager.mark_listing_eval_skipped(
-                        int(state["id"]),
-                        "system_one_skip: not a valid paid job",
-                    )
-                    continue
-                if is_academic_programme_title(eval_res.job_title):
-                    print(f"⏭️  [LLM labelled an academic programme] {eval_res.job_title}")
-                    continue
-                if not eval_res.is_hong_kong_role:
-                    self.db_manager.mark_listing_eval_skipped(
-                        int(state["id"]),
-                        "system_one_skip: not a Hong Kong role",
-                    )
-                    continue
-                deal_breakers = abstract.get("pac_deal_breakers", [])
-                if deal_breakers:
-                    from talent_scout_agent import passes_absolute_deal_breakers
-                    passed, reason = passes_absolute_deal_breakers(content, deal_breakers)
-                    if not passed:
-                        print(f"⏭️  [Deal-breaker: {reason}] {eval_res.job_title}")
-                        log_activity("Rex", f"Rejected by deal-breaker '{reason}': {eval_res.job_title}", level="WARN")
                         continue
-                log_activity(
-                    "Rex",
-                    f"Evaluating JD: {eval_res.company_name} — {eval_res.job_title} "
-                    f"(hard={eval_res.hard_skill_match_score} "
-                    f"transfer={eval_res.transferability_score} "
-                    f"composite={eval_res.composite_match_score})",
-                )
-                company_name = eval_res.company_name
-                if not is_usable_company_name(company_name):
-                    resolved = resolve_employer_name(url, content)
-                    if resolved:
-                        print(f"🏷️  [Employer recovered] {eval_res.job_title} → {resolved}")
-                        company_name = resolved
-                if not is_usable_company_name(company_name):
-                    company_name = state.get("company_name") or extract_host(url) or "Undisclosed employer"
-                    print(f"🏷️  [Keep stored employer] {eval_res.job_title} → {company_name}")
-
-                below_gate = not passes_dual_score_gate(
-                    eval_res.composite_match_score,
-                    eval_res.transferability_score,
-                    min_score=min_score,
-                )
-                if below_gate:
-                    print(
-                        f"📦 [Store below dual-score gate] {eval_res.job_title} "
-                        f"composite={eval_res.composite_match_score} "
-                        f"transfer={eval_res.transferability_score}"
-                    )
+                    if is_academic_programme_title(eval_res.job_title):
+                        print(f"⏭️  [LLM labelled an academic programme] {eval_res.job_title}")
+                        continue
+                    if not eval_res.is_hong_kong_role:
+                        self.db_manager.mark_listing_eval_skipped(
+                            int(state["id"]),
+                            "system_one_skip: not a Hong Kong role",
+                        )
+                        continue
+                    deal_breakers = abstract.get("pac_deal_breakers", [])
+                    if deal_breakers:
+                        from talent_scout_agent import passes_absolute_deal_breakers
+                        passed, reason = passes_absolute_deal_breakers(content, deal_breakers)
+                        if not passed:
+                            print(f"⏭️  [Deal-breaker: {reason}] {eval_res.job_title}")
+                            log_activity("Rex", f"Rejected by deal-breaker '{reason}': {eval_res.job_title}", level="WARN")
+                            continue
                     log_activity(
                         "Rex",
-                        f"Stored below dual-score gate: {eval_res.job_title}",
-                        level="WARN",
-                    )
-
-                stored_title = prefer_listing_title(
-                    raw.get("title") or "", url, eval_res.job_title
-                )
-                if is_junk_job_title(stored_title):
-                    stored_title = eval_res.job_title or stored_title
-                job_summary_text = (
-                    f"{company_name} {stored_title} "
-                    f"{' '.join(eval_res.tech_stack_required)} "
-                    f"{eval_res.target_industry}"
-                )
-                try:
-                    try:
-                        snippet = summarize_jd(self.client, self.chat_model, content)
-                    except Exception as exc:
-                        print(f"⚠️ [JD summary failed] {stored_title}: {exc}")
-                        snippet = (content or "")[:500]
-                    job_record = {
-                        "job_url": url,
-                        "company_name": company_name,
-                        "job_title": stored_title,
-                        "location_mode": eval_res.location_mode,
-                        "salary_range": eval_res.salary_range,
-                        "match_score": eval_res.composite_match_score,
-                        "matched_skills": eval_res.transferable_strengths,
-                        "missing_skills": eval_res.bridging_gaps,
-                        "is_direct_hire": eval_res.is_direct_hire,
-                        "recommendation_reason": eval_res.recommendation_reason,
-                        "jd_snippet": snippet,
-                        "jd_full": clip_listing_text(content),
-                        "target_industry": eval_res.target_industry,
-                        "hard_skill_match_score": eval_res.hard_skill_match_score,
-                        "transferability_score": eval_res.transferability_score,
-                        "transferable_strengths": eval_res.transferable_strengths,
-                        "career_advisory_note": eval_res.career_advisory_note,
-                        "posted_at": parse_posted_at(
-                            raw.get("published_date") or "",
-                            content,
-                        ),
-                    }
-                    self.db_manager.update_job_evaluation(int(state["id"]), job_record)
-                    job_id = int(state["id"])
-                except Exception as exc:
-                    print(f"⚠️ [Score update skipped] {stored_title}: {exc}")
-                    log_activity("Rex", f"Score update skipped: {exc}", level="ERROR")
-                    continue
-                notify_job_update(
-                    "Rex",
-                    "Job archived (below gate)" if below_gate else "New job stored",
-                    company=company_name,
-                    title=stored_title,
-                    score=eval_res.composite_match_score,
-                    url=url,
-                    extra=(
-                        f"hard={eval_res.hard_skill_match_score} "
+                        f"Evaluating JD: {eval_res.company_name} — {eval_res.job_title} "
+                        f"(hard={eval_res.hard_skill_match_score} "
                         f"transfer={eval_res.transferability_score} "
-                        f"{eval_res.target_industry}"
-                    ),
-                )
-                log_activity(
-                    "Rex",
-                    f"Stored job #{job_id}: {company_name} — {eval_res.job_title} "
-                    f"[{eval_res.target_industry}]",
-                )
-                print(
-                    f"🎯 [職涯路徑職缺] {company_name} - {eval_res.job_title} "
-                    f"| {eval_res.target_industry} "
-                    f"| hard={eval_res.hard_skill_match_score} "
-                    f"transfer={eval_res.transferability_score} "
-                    f"composite={eval_res.composite_match_score} "
-                    f"| {raw.get('source_lane', 'unknown')}"
-                )
-                if eval_res.career_advisory_note:
-                    print(f"   💡 {eval_res.career_advisory_note}")
+                        f"composite={eval_res.composite_match_score})",
+                    )
+                    company_name = eval_res.company_name
+                    if not is_usable_company_name(company_name):
+                        resolved = resolve_employer_name(url, content)
+                        if resolved:
+                            print(f"🏷️  [Employer recovered] {eval_res.job_title} → {resolved}")
+                            company_name = resolved
+                    if not is_usable_company_name(company_name):
+                        company_name = state.get("company_name") or extract_host(url) or "Undisclosed employer"
+                        print(f"🏷️  [Keep stored employer] {eval_res.job_title} → {company_name}")
 
-        print(
-            f"\n✅ 職涯路徑掃描完成！新增 {discovered_count} 筆職缺至資料庫"
-            f"（含分數門檻以下的真實職缺；Dana 只處理 composite>={min_score}）。"
-        )
-        log_activity("Rex", f"Pipeline complete: {discovered_count} jobs stored")
-        notify_job_update(
-            "Rex",
-            "Scan finished",
-            extra=f"{discovered_count} job(s) stored",
-        )
-        return discovered_count
+                    below_gate = not passes_dual_score_gate(
+                        eval_res.composite_match_score,
+                        eval_res.transferability_score,
+                        min_score=min_score,
+                    )
+                    if below_gate:
+                        print(
+                            f"📦 [Store below dual-score gate] {eval_res.job_title} "
+                            f"composite={eval_res.composite_match_score} "
+                            f"transfer={eval_res.transferability_score}"
+                        )
+                        log_activity(
+                            "Rex",
+                            f"Stored below dual-score gate: {eval_res.job_title}",
+                            level="WARN",
+                        )
+
+                    stored_title = prefer_listing_title(
+                        raw.get("title") or "", url, eval_res.job_title
+                    )
+                    if is_junk_job_title(stored_title):
+                        stored_title = eval_res.job_title or stored_title
+                    job_summary_text = (
+                        f"{company_name} {stored_title} "
+                        f"{' '.join(eval_res.tech_stack_required)} "
+                        f"{eval_res.target_industry}"
+                    )
+                    try:
+                        try:
+                            snippet = summarize_jd(self.client, self.chat_model, content)
+                        except Exception as exc:
+                            print(f"⚠️ [JD summary failed] {stored_title}: {exc}")
+                            snippet = (content or "")[:500]
+                        job_record = {
+                            "job_url": url,
+                            "company_name": company_name,
+                            "job_title": stored_title,
+                            "location_mode": eval_res.location_mode,
+                            "salary_range": eval_res.salary_range,
+                            "match_score": eval_res.composite_match_score,
+                            "matched_skills": eval_res.transferable_strengths,
+                            "missing_skills": eval_res.bridging_gaps,
+                            "is_direct_hire": eval_res.is_direct_hire,
+                            "recommendation_reason": eval_res.recommendation_reason,
+                            "jd_snippet": snippet,
+                            "jd_full": clip_listing_text(content),
+                            "target_industry": eval_res.target_industry,
+                            "hard_skill_match_score": eval_res.hard_skill_match_score,
+                            "transferability_score": eval_res.transferability_score,
+                            "transferable_strengths": eval_res.transferable_strengths,
+                            "career_advisory_note": eval_res.career_advisory_note,
+                            "posted_at": parse_posted_at(
+                                raw.get("published_date") or "",
+                                content,
+                            ),
+                        }
+                        self.db_manager.update_job_evaluation(int(state["id"]), job_record)
+                        job_id = int(state["id"])
+                    except Exception as exc:
+                        print(f"⚠️ [Score update skipped] {stored_title}: {exc}")
+                        log_activity("Rex", f"Score update skipped: {exc}", level="ERROR")
+                        continue
+                    notify_job_update(
+                        "Rex",
+                        "Job archived (below gate)" if below_gate else "New job stored",
+                        company=company_name,
+                        title=stored_title,
+                        score=eval_res.composite_match_score,
+                        url=url,
+                        extra=(
+                            f"hard={eval_res.hard_skill_match_score} "
+                            f"transfer={eval_res.transferability_score} "
+                            f"{eval_res.target_industry}"
+                            + (f" | {closed_reason}" if closed_reason else "")
+                        ),
+                    )
+                    self._keep_score_expire_linkedin(job_id, url, content)
+                    log_activity(
+                        "Rex",
+                        f"Stored job #{job_id}: {company_name} — {eval_res.job_title} "
+                        f"[{eval_res.target_industry}]",
+                    )
+                    print(
+                        f"🎯 [職涯路徑職缺] {company_name} - {eval_res.job_title} "
+                        f"| {eval_res.target_industry} "
+                        f"| hard={eval_res.hard_skill_match_score} "
+                        f"transfer={eval_res.transferability_score} "
+                        f"composite={eval_res.composite_match_score} "
+                        f"| {raw.get('source_lane', 'unknown')}"
+                    )
+                    if eval_res.career_advisory_note:
+                        print(f"   💡 {eval_res.career_advisory_note}")
+
+            print(
+                f"\n✅ 職涯路徑掃描完成！新增 {discovered_count} 筆職缺至資料庫"
+                f"（含分數門檻以下的真實職缺；Dana 只處理 composite>={min_score}）。"
+            )
+            log_activity("Rex", f"Pipeline complete: {discovered_count} jobs stored")
+            log_activity(
+                "Rex",
+                f"Tavily used {self._rex_tavily_used}/{self._rex_tavily_budget} this scan",
+            )
+            notify_job_update(
+                "Rex",
+                "Scan finished",
+                extra=f"{discovered_count} job(s) stored",
+            )
+            return discovered_count
+        finally:
+            self.end_rex_tavily_budget()
 
 
 if __name__ == "__main__":

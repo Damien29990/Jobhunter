@@ -15,7 +15,15 @@ from application_followup import (
     default_status_when_pack_ready,
     follow_up_needed,
     normalize_application_status,
+    skip_listing_expiry_check,
 )
+
+
+def test_applied_skips_listing_expiry() -> None:
+    assert skip_listing_expiry_check("APPLIED") is True
+    assert skip_listing_expiry_check("INTERVIEW") is True
+    assert skip_listing_expiry_check("READY") is False
+    assert skip_listing_expiry_check(None) is False
 
 
 def test_normalize_unknown_is_ready() -> None:

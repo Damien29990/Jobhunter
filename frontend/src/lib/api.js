@@ -3,13 +3,31 @@
 
 const BASE = import.meta.env.VITE_API_URL || '/api'
 
+const HOSTING_ERR = 'The backend server is not hosting'
+
+function asHostingError(err) {
+  const msg = String(err && err.message ? err.message : err || '')
+  if (
+    err instanceof TypeError
+    || /failed to fetch|networkerror|load failed|econnrefused/i.test(msg)
+  ) {
+    return new Error(HOSTING_ERR)
+  }
+  return err instanceof Error ? err : new Error(msg)
+}
+
 async function getJSON(path, params) {
   const qs = params
     ? '?' + new URLSearchParams(
         Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''))
-      ).toString()
+    ).toString()
     : ''
-  const res = await fetch(`${BASE}${path}${qs}`, { headers: { Accept: 'application/json' } })
+  let res
+  try {
+    res = await fetch(`${BASE}${path}${qs}`, { headers: { Accept: 'application/json' } })
+  } catch (e) {
+    throw asHostingError(e)
+  }
   if (!res.ok) {
     let msg = `${res.status}`
     try { msg = (await res.json()).detail || msg } catch { /* ignore */ }
@@ -19,11 +37,16 @@ async function getJSON(path, params) {
 }
 
 async function postJSON(path, body) {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+  } catch (e) {
+    throw asHostingError(e)
+  }
   const data = await res.json().catch(() => ({ ok: res.ok }))
   if (!res.ok) {
     const msg = data.detail || `${res.status}`
@@ -111,12 +134,24 @@ export const api = {
     }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
   jobsShelf: () => getJSON('/jobs/shelf'),
   jobsFollowUp: () => getJSON('/jobs/follow-up'),
-  setJobFollowUp: (id, body) =>
-    fetch(`${BASE}/jobs/${id}/follow-up`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-    }).then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e)))),
+  setJobFollowUp: async (id, body) => {
+    let r
+    try {
+      r = await fetch(`${BASE}/jobs/${id}/follow-up`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      })
+    } catch (e) {
+      throw asHostingError(e)
+    }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}))
+      const msg = data.detail || `${r.status}`
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    }
+    return r.json()
+  },
   checkJob: (id) => postJSON(`/jobs/${id}/check`),
   jobDossier: (id) => getJSON(`/jobs/${id}/dossier`),
   jobCvUrl: (id, opts) => {
@@ -153,11 +188,15 @@ export const api = {
 
   funnel: () => getJSON('/stats/funnel'),
   gates: () => getJSON('/gates'),
+  systemOne: () => getJSON('/system-one'),
 
   agentStatus: () => getJSON('/agents/status'),
+  agentRuns: (limit) => getJSON('/agents/runs', limit ? { limit } : undefined),
+  agentRunsSummary: () => getJSON('/agents/runs/summary'),
   runPipeline: (body) => postJSON('/pipeline/run', body),
   stopPipeline: () => postJSON('/pipeline/stop', {}),
   pipelineStatus: () => getJSON('/pipeline/status'),
+  pipelineApplyOverview: () => getJSON('/pipeline/apply-overview'),
   agentLog: (tail, source) => {
     const params = {}
     if (tail) params.tail = tail

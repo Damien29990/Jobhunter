@@ -246,6 +246,82 @@ class FunnelStats(BaseModel):
     application_ready: int
 
 
+class ApplyReadyJobOut(BaseModel):
+    """One application_ready listing for the pipeline-finish overview.
+
+    # Ref: apply_overview.list_apply_jobs
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    company_name: Optional[str] = None
+    job_title: Optional[str] = None
+    match_score: Optional[int] = None
+    hard_skill_match_score: Optional[int] = None
+    transferability_score: Optional[int] = None
+    location_mode: Optional[str] = None
+    salary_range: Optional[str] = None
+    job_url: Optional[str] = None
+    cv_status: Optional[str] = None
+    application_status: Optional[str] = None
+    source_domain: Optional[str] = None
+    vetting_verdict: Optional[str] = None
+    dossier_confidence: Optional[int] = None
+
+    @field_validator(
+        "match_score",
+        "hard_skill_match_score",
+        "transferability_score",
+        "dossier_confidence",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_int(cls, v):
+        if v is None or v == "":
+            return None
+        return int(v)
+
+
+class PipelineFinishOverview(BaseModel):
+    """Dashboard + Telegram apply overview after a pipeline run.
+
+    # Ref: apply_overview.announce_pipeline_finish
+    """
+
+    finished_at: Optional[str] = None
+    success: bool = True
+    error: Optional[str] = None
+    source: Optional[str] = None
+    telegram_ok: Optional[bool] = None
+    application_ready: int = 0
+    jobs: list[ApplyReadyJobOut] = Field(default_factory=list)
+
+
+class SystemOneDecisionOut(BaseModel):
+    """One audited System One gate. # Ref: src/validators/system_one.py"""
+
+    gate: str
+    title: str = ""
+    proceed: bool
+    confidence: float
+    reason: str
+    backend: Literal["heuristic", "laya"]
+    decided_at: str
+
+
+class SystemOneStatus(BaseModel):
+    """Laya System One presence for the office strip."""
+
+    name: str
+    role: str
+    backend: Literal["heuristic", "laya"]
+    configured: bool
+    model: str
+    threshold: float
+    last_decisions: list[SystemOneDecisionOut] = Field(default_factory=list)
+
+
 class CandidateProfile(BaseModel):
     """A selectable candidate. Forward-compatible with config/profiles/."""
     model_config = ConfigDict(extra="ignore")
@@ -287,6 +363,66 @@ class AgentStatus(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    tavily_calls: int = 0
+    tavily_credits_est: int = 0
+    tavily_search_calls: int = 0
+    tavily_extract_calls: int = 0
+
+
+class AgentRunOut(BaseModel):
+    """One finished agent process. # Ref: agent_runs"""
+
+    id: int
+    agent: str
+    pipeline_id: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+    tavily_calls: int = 0
+    tavily_credits_est: int = 0
+    tavily_search_calls: int = 0
+    tavily_extract_calls: int = 0
+
+
+class AgentRunList(BaseModel):
+    items: list[AgentRunOut] = Field(default_factory=list)
+
+
+class AgentUsageTotals(BaseModel):
+    """Summed DeepSeek tokens + estimated Tavily credits.
+
+    # Ref: agent_runs — dashboard usage strip
+    """
+
+    runs: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    tavily_calls: int = 0
+    tavily_credits_est: int = 0
+    tavily_search_calls: int = 0
+    tavily_extract_calls: int = 0
+
+
+class AgentUsageByAgent(BaseModel):
+    """Per-character rollup. # Ref: agent_runs.agent"""
+
+    agent: str
+    runs: int = 0
+    total_tokens: int = 0
+    tavily_calls: int = 0
+    tavily_credits_est: int = 0
+
+
+class AgentUsageSummary(BaseModel):
+    """Lifetime + last-7-days (Asia/Hong_Kong) usage for the dashboard."""
+
+    lifetime: AgentUsageTotals
+    week: AgentUsageTotals
+    by_agent: list[AgentUsageByAgent] = Field(default_factory=list)
 
 
 class AgentStatusMap(BaseModel):

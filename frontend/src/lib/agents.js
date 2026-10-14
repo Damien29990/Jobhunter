@@ -84,7 +84,7 @@ export const AGENTS = [
 
 export const AGENT_BY_KEY = Object.fromEntries(AGENTS.map((a) => [a.key, a]))
 
-/** Floor + desk cards. Milo is opened from the header "Talk to Milo" button. */
+/** Floor + desk cards. Milo is opened from the bottom-right dock button. */
 export const OFFICE_AGENTS = AGENTS.filter((a) => a.key !== 'milo')
 
 // Quest bar steps — one per agent, in pipeline order. Labels via i18n.

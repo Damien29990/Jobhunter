@@ -12,7 +12,7 @@ if str(_VALIDATORS) not in sys.path:
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from system_one import should_evaluate_jd, should_rerun_dossier
+from system_one import LAYA_EVALUATE_THRESHOLD, should_evaluate_jd, should_rerun_dossier
 
 HK = ZoneInfo("Asia/Hong_Kong")
 
@@ -57,6 +57,18 @@ def test_dana_force_and_missing_dossier() -> None:
     assert should_rerun_dossier(has_dossier=True, force=True).proceed is True
 
 
+def test_dana_does_not_rerun_low_confidence_dossier() -> None:
+    now = datetime.now(HK)
+    decision = should_rerun_dossier(
+        has_dossier=True,
+        dossier_updated_at=now.isoformat(),
+        dossier_confidence=22,
+        newest_job_created_at=(now - timedelta(days=1)).isoformat(),
+        force=False,
+    )
+    assert decision.proceed is False
+
+
 def test_dana_skips_fresh_confident_dossier() -> None:
     now = datetime.now(HK)
     decision = should_rerun_dossier(
@@ -78,6 +90,41 @@ def test_dana_reruns_when_newer_job_arrives() -> None:
         force=False,
     )
     assert decision.proceed is True
+
+
+def test_laya_noul_gates_evaluate(monkeypatch) -> None:
+    import system_one
+
+    monkeypatch.setattr(system_one, "ask_noul", lambda *a, **k: 0.2)
+    decision = should_evaluate_jd(
+        title="Python Backend Engineer",
+        content=(
+            "We are hiring a Python backend engineer in Hong Kong "
+            "for an IoT telemetry platform. FastAPI, PostgreSQL, on-site Kowloon."
+        ),
+        url="https://hk.jobsdb.com/job/94495079",
+    )
+    assert decision.proceed is False
+    assert decision.backend == "laya"
+    assert decision.confidence >= 0.0
+    assert LAYA_EVALUATE_THRESHOLD == 0.55
+
+
+def test_laya_failure_falls_back_to_heuristic(monkeypatch) -> None:
+    import system_one
+
+    monkeypatch.setattr(system_one, "ask_noul", lambda *a, **k: None)
+    jd = (
+        "We are hiring a Python backend engineer in Hong Kong "
+        "for an IoT telemetry platform. FastAPI, PostgreSQL, on-site Kowloon."
+    )
+    decision = should_evaluate_jd(
+        title="Python Backend Engineer",
+        content=jd,
+        url="https://hk.jobsdb.com/job/94495079",
+    )
+    assert decision.proceed is True
+    assert decision.backend == "heuristic"
 
 
 def test_evaluates_researcher_data_science_hkpc() -> None:

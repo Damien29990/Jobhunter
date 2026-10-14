@@ -59,13 +59,25 @@ function Desk({ agent, status, step, done, onClick, onRun, onStop, t }) {
         <div className="font-mono text-[11px] text-slate-300 leading-tight mb-0.5">{t(step.labelKey)}</div>
       )}
       <div className="font-mono text-[11px] text-slate-500 mb-2">{t(`agents.${agent.key}.role`)}</div>
-      {(status?.total_tokens > 0) && (
-        <div className="font-mono text-[11px] text-slate-400 mb-2">
-          {t('office.tokens', {
-            total: status.total_tokens,
-            prompt: status.prompt_tokens || 0,
-            completion: status.completion_tokens || 0,
-          })}
+      {(status?.total_tokens > 0 || status?.tavily_credits_est > 0) && (
+        <div className="font-mono text-[11px] text-slate-400 mb-2 leading-5 space-y-1">
+          {status?.total_tokens > 0 && (
+            <div>
+              {t('office.tokens', {
+                total: status.total_tokens,
+                prompt: status.prompt_tokens || 0,
+                completion: status.completion_tokens || 0,
+              })}
+            </div>
+          )}
+          {(status?.tavily_calls > 0 || status?.tavily_credits_est > 0) && (
+            <div>
+              {t('office.tavily', {
+                credits: status.tavily_credits_est || 0,
+                calls: status.tavily_calls || 0,
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -120,6 +132,7 @@ export default function OfficeScene({
   const [status, setStatus] = useState(parentStatus || null)
   const [pipeline, setPipeline] = useState(null)
   const [scheduler, setScheduler] = useState(null)
+  const [systemOne, setSystemOne] = useState(null)
 
   useEffect(() => {
     if (parentStatus) setStatus(parentStatus)
@@ -134,15 +147,17 @@ export default function OfficeScene({
     let active = true
     async function poll() {
       try {
-        const [s, p, sched] = await Promise.all([
+        const [s, p, sched, so] = await Promise.all([
           api.agentStatus(),
           api.pipelineStatus().catch(() => null),
           api.schedulerStatus?.().catch(() => null),
+          api.systemOne().catch(() => null),
         ])
         if (!active) return
         setStatus(s)
         setPipeline(p)
         setScheduler(sched)
+        setSystemOne(so)
       } catch { /* backend not up yet */ }
     }
     poll()
@@ -206,7 +221,18 @@ export default function OfficeScene({
   return (
     <section className="panel overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b-2 border-ink-700">
-        <h2 className="font-pixel text-[12px] text-amber-retro">{t('office.title')}</h2>
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <h2 className="font-pixel text-[12px] text-amber-retro">{t('office.title')}</h2>
+          {systemOne && (
+            <span
+              className="font-mono text-[11px] px-2 py-0.5 panel-inset"
+              style={{ color: systemOne.backend === 'laya' ? '#10b981' : '#94a3b8' }}
+              title={systemOne.last_decisions?.[0]?.reason || t('office.layaHint')}
+            >
+              {t('office.laya')} · {t('office.layaRole')} · {systemOne.backend === 'laya' ? t('office.layaOnline') : t('office.layaHeuristic')}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {/* Scheduler controls */}
           {scheduler && (

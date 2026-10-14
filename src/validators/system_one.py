@@ -1,16 +1,20 @@
 """System One decisions — fast structured yes/no, no prose generation.
 
 # Ref: Kahneman System 1 / TypeSafe System One — bounded semantic judgment
-# Jobhunter uses a calibrated heuristic until a Jev/Laya key is configured.
+# Hard rules stay heuristic. Semantic JD gating can call Laya when configured.
 """
 
 from __future__ import annotations
 
+import threading
+from collections import deque
 from datetime import datetime
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
+
+from laya_client import ask_noul, load_laya_config
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
@@ -24,6 +28,20 @@ DOSSIER_STALE_DAYS = 14
 
 # Dana confidence is 0–100. Below this, re-run even if the dossier is young.
 DOSSIER_RERUN_CONFIDENCE_FLOOR = 50
+
+# Laya noul must meet this to spend DeepSeek on a listing.
+# Ref: System One — threshold is a constant, never guessed by the model
+LAYA_EVALUATE_THRESHOLD: float = 0.55
+
+_EVALUATE_INSTRUCTIONS = (
+    "Is this a real paid Hong Kong IT or engineering job posting that is "
+    "worth spending an LLM score on? Answer no for academic programmes, "
+    "unpaid internships, non-Hong-Kong roles, non-IT ads, or empty listings."
+)
+
+_AUDIT_MAX = 8
+_audit_lock = threading.Lock()
+_audit: deque[SystemOneAudit] = deque(maxlen=_AUDIT_MAX)
 
 _HK_HINTS = (
     "hong kong", "hongkong", "香港", "kowloon", "九龍", "新界",
@@ -46,7 +64,22 @@ class SystemOneDecision(BaseModel):
     proceed: bool
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
-    backend: Literal["heuristic"] = "heuristic"
+    backend: Literal["heuristic", "laya"] = "heuristic"
+
+
+class SystemOneAudit(BaseModel):
+    """Last System One calls for the dashboard. Times are Asia/Hong_Kong.
+
+    # Ref: workspace timezone Asia/Hong_Kong ISO 8601
+    """
+
+    gate: str
+    title: str = ""
+    proceed: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str
+    backend: Literal["heuristic", "laya"]
+    decided_at: str
 
 
 def _parse_hk(stamp: Optional[str]) -> Optional[datetime]:
@@ -59,6 +92,43 @@ def _parse_hk(stamp: Optional[str]) -> Optional[datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=HK_TZ)
     return parsed.astimezone(HK_TZ)
+
+
+def _remember(gate: str, title: str, decision: SystemOneDecision) -> SystemOneDecision:
+    row = SystemOneAudit(
+        gate=gate,
+        title=(title or "")[:80],
+        proceed=decision.proceed,
+        confidence=decision.confidence,
+        reason=decision.reason,
+        backend=decision.backend,
+        decided_at=datetime.now(HK_TZ).isoformat(timespec="seconds"),
+    )
+    with _audit_lock:
+        _audit.append(row)
+    return decision
+
+
+def recent_decisions() -> list[SystemOneAudit]:
+    with _audit_lock:
+        return list(_audit)
+
+
+def status_snapshot() -> dict[str, object]:
+    """Dashboard-facing Laya / System One status. No secrets.
+
+    # Ref: /api/system-one
+    """
+    cfg = load_laya_config()
+    return {
+        "name": "Laya",
+        "role": "System One",
+        "backend": "laya" if cfg.prefer_laya else "heuristic",
+        "configured": bool(cfg.url),
+        "model": cfg.model,
+        "threshold": LAYA_EVALUATE_THRESHOLD,
+        "last_decisions": [row.model_dump() for row in recent_decisions()],
+    }
 
 
 def _age_days(stamp: Optional[str]) -> Optional[int]:
@@ -79,46 +149,67 @@ def should_evaluate_jd(
     """Decide whether Rex should spend DeepSeek on this stored listing.
 
     User-pasted URLs always evaluate. Already-scored rows skip.
+    Short / empty JD never reaches Laya. Semantic yes/no may use Laya noul.
     # Ref: Rex — store JD first, then System One gates the LLM score
     """
     if user_supplied:
-        return SystemOneDecision(
-            proceed=True,
-            confidence=1.0,
-            reason="user-supplied listing",
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(proceed=True, confidence=1.0, reason="user-supplied listing"),
         )
     if already_scored:
-        return SystemOneDecision(
-            proceed=False,
-            confidence=0.95,
-            reason="already scored",
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(proceed=False, confidence=0.95, reason="already scored"),
         )
     blob = f"{title or ''} {content or ''} {url or ''}".lower()
     text = (content or "").strip()
     if len(text) < MIN_JD_CHARS_TO_EVALUATE:
-        return SystemOneDecision(
-            proceed=False,
-            confidence=0.85,
-            reason="JD text too short to score",
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(proceed=False, confidence=0.85, reason="JD text too short to score"),
         )
+
+    state = f"title: {title or ''}\nurl: {url or ''}\njd: {text}"
+    noul = ask_noul(state, _EVALUATE_INSTRUCTIONS, name="evaluate")
+    if noul is not None:
+        proceed = noul >= LAYA_EVALUATE_THRESHOLD
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(
+                proceed=proceed,
+                confidence=noul if proceed else (1.0 - noul),
+                reason=f"Laya noul={noul:.2f} (threshold {LAYA_EVALUATE_THRESHOLD})",
+                backend="laya",
+            ),
+        )
+
     role_hit = any(hint in blob for hint in _ROLE_HINTS)
     hk_hit = any(hint in blob for hint in _HK_HINTS)
     if not role_hit:
-        return SystemOneDecision(
-            proceed=False,
-            confidence=0.7,
-            reason="no IT/role noun in title or JD",
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(proceed=False, confidence=0.7, reason="no IT/role noun in title or JD"),
         )
     if not hk_hit:
-        return SystemOneDecision(
-            proceed=False,
-            confidence=0.6,
-            reason="no Hong Kong signal in JD or URL",
+        return _remember(
+            "evaluate_jd",
+            title,
+            SystemOneDecision(proceed=False, confidence=0.6, reason="no Hong Kong signal in JD or URL"),
         )
-    return SystemOneDecision(
-        proceed=True,
-        confidence=0.8,
-        reason="JD looks like a Hong Kong IT vacancy",
+    return _remember(
+        "evaluate_jd",
+        title,
+        SystemOneDecision(
+            proceed=True,
+            confidence=0.8,
+            reason="JD looks like a Hong Kong IT vacancy",
+        ),
     )
 
 
@@ -133,7 +224,9 @@ def should_rerun_dossier(
     """Decide whether Dana should re-run Tavily + DeepSeek for an employer.
 
     Manual --force / job-id force_refresh always proceeds.
-    # Ref: Dana — skip a fresh high-confidence dossier unless new jobs arrived
+    Existing dossiers are kept: low confidence and age do not re-spend Tavily.
+    Only a newer stored listing (or force) re-opens research.
+    # Ref: Dana — do not loop past researched employers
     """
     if force:
         return SystemOneDecision(
@@ -146,20 +239,6 @@ def should_rerun_dossier(
             proceed=True,
             confidence=1.0,
             reason="no dossier yet",
-        )
-    age = _age_days(dossier_updated_at)
-    if age is not None and age >= DOSSIER_STALE_DAYS:
-        return SystemOneDecision(
-            proceed=True,
-            confidence=0.85,
-            reason=f"dossier is {age} days old",
-        )
-    conf = int(dossier_confidence) if dossier_confidence is not None else 0
-    if conf < DOSSIER_RERUN_CONFIDENCE_FLOOR:
-        return SystemOneDecision(
-            proceed=True,
-            confidence=0.75,
-            reason=f"dossier confidence {conf} below {DOSSIER_RERUN_CONFIDENCE_FLOOR}",
         )
     job_ts = _parse_hk(newest_job_created_at)
     dossier_ts = _parse_hk(dossier_updated_at)

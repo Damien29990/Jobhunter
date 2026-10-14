@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { X, Send, LoaderCircle, MessageSquare, Paperclip } from 'lucide-react'
+import { X, Send, LoaderCircle, MessageSquare, Paperclip, Minus, SquareArrowOutUpRight } from 'lucide-react'
 import { api } from '../lib/api'
 
 const ACCEPT = '.pdf,.txt,.md,.json,.docx,.text,.csv'
@@ -24,7 +24,7 @@ function displayContent(m) {
     .trim()
 }
 
-export default function MiloChat({ candidateId, onClose }) {
+export default function MiloChat({ candidateId, open = false, onOpen, onClose, variant = 'dock' }) {
   const { t } = useTranslation()
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState('')
@@ -104,116 +104,186 @@ export default function MiloChat({ candidateId, onClose }) {
   }
 
   const canSend = !sending && (draft.trim() || files.length > 0)
+  const popup = variant === 'popup'
 
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <aside className="relative w-full max-w-md panel border-l-4 h-full flex flex-col" style={{ borderColor: '#a78bfa' }}>
+  function popOut() {
+    const q = new URLSearchParams()
+    q.set('milo', '1')
+    if (candidateId) q.set('candidate', candidateId)
+    const url = `${window.location.origin}${window.location.pathname}?${q.toString()}`
+    window.open(url, 'jobhunter-milo', 'width=720,height=900,resizable=yes,scrollbars=yes')
+    onClose?.()
+  }
+
+  const transcript = (
+    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 kanban-scroll">
+      {loadingHist && (
+        <div className="flex items-center gap-2 font-mono text-[12px] text-slate-500">
+          <LoaderCircle size={14} className="animate-spin" /> {t('milo.loadingHistory')}
+        </div>
+      )}
+      {histErr && !loadingHist && messages.length === 0 && (
+        <div className="font-mono text-[12px] text-amber-retro">{t('milo.historyError')}</div>
+      )}
+      {messages.length === 0 && !loadingHist && !histErr && (
+        <div className="font-mono text-[12px] text-slate-400 leading-5">{t('milo.empty')}</div>
+      )}
+      {messages.map((m, i) => (
+        <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div
+            className="max-w-[85%] panel-inset px-3 py-2"
+            style={{ borderColor: m.role === 'user' ? '#a78bfa' : '#1e293b' }}
+          >
+            <div className="font-mono text-[11px] mb-1" style={{ color: m.role === 'user' ? '#a78bfa' : '#64748b' }}>
+              {m.role === 'user' ? t('milo.you') : 'Milo'}
+            </div>
+            {attachmentNames(m).length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-1.5">
+                {attachmentNames(m).map((name) => (
+                  <span key={name} className="font-mono text-[11px] px-1.5 py-0.5 border" style={{ color: '#a78bfa', borderColor: '#a78bfa' }}>
+                    {name}
+                  </span>
+                ))}
+              </div>
+            )}
+            {displayContent(m) && (
+              <div className="font-sans text-[13px] text-slate-200 whitespace-pre-wrap leading-relaxed break-words">{displayContent(m)}</div>
+            )}
+            {(m.imported?.length > 0 || /\[CV imported into profile\]/.test(m.content || '')) && (
+              <div className="font-mono text-[11px] text-emerald-retro mt-1">{t('milo.imported')}</div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+
+  const composer = (
+    <div className="p-3 border-t-2 border-ink-700">
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {files.map((f) => (
+            <span key={`${f.name}-${f.size}`} className="font-mono text-[11px] px-1.5 py-0.5 border flex items-center gap-1" style={{ color: '#a78bfa', borderColor: '#a78bfa' }}>
+              {f.name}
+              <button
+                onClick={() => setFiles((cur) => cur.filter((x) => x !== f))}
+                className="opacity-70 hover:opacity-100"
+                title={t('milo.removeFile')}
+              >
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {attachErr && <div className="font-mono text-[11px] text-rose-retro mb-1.5">{attachErr}</div>}
+      <div className="flex items-end gap-2">
+        <input
+          ref={fileRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          className="hidden"
+          onChange={(e) => addFiles(e.target.files)}
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={sending}
+          title={t('milo.attach')}
+          className="panel px-2.5 py-2 flex items-center justify-center disabled:opacity-50"
+          style={{ color: '#a78bfa' }}
+        >
+          <Paperclip size={16} />
+        </button>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
+          placeholder={t('milo.placeholder')}
+          rows={2}
+          className="flex-1 min-w-0 panel-inset px-2.5 py-2 font-sans text-[13px] text-slate-200 focus:outline-none resize-none"
+        />
+        <button
+          onClick={send}
+          disabled={!canSend}
+          className="panel px-3 py-2 flex items-center justify-center disabled:opacity-50"
+          style={{ color: '#a78bfa' }}
+        >
+          {sending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
+        </button>
+      </div>
+      <div className="font-mono text-[11px] text-slate-600 mt-1.5">{t('milo.attachHint')}</div>
+    </div>
+  )
+
+  const headerActions = (
+    <div className="flex items-center gap-1 shrink-0">
+      {!popup && (
+        <button
+          type="button"
+          onClick={popOut}
+          title={t('milo.popOut')}
+          className="p-1.5 text-slate-400 hover:text-slate-200"
+        >
+          <SquareArrowOutUpRight size={16} />
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onClose}
+        title={popup ? t('milo.closePopup') : t('milo.minimize')}
+        className="p-1.5 text-slate-400 hover:text-rose-retro"
+      >
+        {popup ? <X size={18} /> : <Minus size={18} />}
+      </button>
+    </div>
+  )
+
+  if (popup) {
+    return (
+      <aside className="h-screen w-screen panel flex flex-col border-l-4" style={{ borderColor: '#a78bfa' }}>
         <div className="flex items-center justify-between p-3 border-b-2 border-ink-700">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <MessageSquare size={18} style={{ color: '#a78bfa' }} />
             <h3 className="font-pixel text-[13px]" style={{ color: '#a78bfa' }}>{t('milo.title')}</h3>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-rose-retro"><X size={20} /></button>
+          {headerActions}
         </div>
-
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 kanban-scroll">
-          {loadingHist && (
-            <div className="flex items-center gap-2 font-mono text-[12px] text-slate-500">
-              <LoaderCircle size={14} className="animate-spin" /> {t('milo.loadingHistory')}
-            </div>
-          )}
-          {histErr && !loadingHist && messages.length === 0 && (
-            <div className="font-mono text-[12px] text-amber-retro">{t('milo.historyError')}</div>
-          )}
-          {messages.length === 0 && !loadingHist && !histErr && (
-            <div className="font-mono text-[12px] text-slate-600">{t('milo.empty')}</div>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div
-                className="max-w-[85%] panel-inset px-3 py-2"
-                style={{ borderColor: m.role === 'user' ? '#a78bfa' : '#1e293b' }}
-              >
-                <div className="font-mono text-[10px] mb-1" style={{ color: m.role === 'user' ? '#a78bfa' : '#64748b' }}>
-                  {m.role === 'user' ? t('milo.you') : 'Milo'}
-                </div>
-                {attachmentNames(m).length > 0 && (
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {attachmentNames(m).map((name) => (
-                      <span key={name} className="font-mono text-[10px] px-1.5 py-0.5 border" style={{ color: '#a78bfa', borderColor: '#a78bfa' }}>
-                        {name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {displayContent(m) && (
-                  <div className="font-sans text-[13px] text-slate-200 whitespace-pre-wrap leading-relaxed">{displayContent(m)}</div>
-                )}
-                {(m.imported?.length > 0 || /\[CV imported into profile\]/.test(m.content || '')) && (
-                  <div className="font-mono text-[11px] text-emerald-retro mt-1">{t('milo.imported')}</div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="p-3 border-t-2 border-ink-700">
-          {files.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {files.map((f) => (
-                <span key={`${f.name}-${f.size}`} className="font-mono text-[11px] px-1.5 py-0.5 border flex items-center gap-1" style={{ color: '#a78bfa', borderColor: '#a78bfa' }}>
-                  {f.name}
-                  <button
-                    onClick={() => setFiles((cur) => cur.filter((x) => x !== f))}
-                    className="opacity-70 hover:opacity-100"
-                    title={t('milo.removeFile')}
-                  >
-                    <X size={11} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          {attachErr && <div className="font-mono text-[11px] text-rose-retro mb-1.5">{attachErr}</div>}
-          <div className="flex items-end gap-2">
-            <input
-              ref={fileRef}
-              type="file"
-              accept={ACCEPT}
-              multiple
-              className="hidden"
-              onChange={(e) => addFiles(e.target.files)}
-            />
-            <button
-              onClick={() => fileRef.current?.click()}
-              disabled={sending}
-              title={t('milo.attach')}
-              className="panel px-2.5 py-2 flex items-center justify-center disabled:opacity-50"
-              style={{ color: '#a78bfa', borderColor: '#a78bfa' }}
-            >
-              <Paperclip size={16} />
-            </button>
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-              placeholder={t('milo.placeholder')}
-              rows={2}
-              className="flex-1 panel-inset px-2.5 py-2 font-sans text-[13px] text-slate-200 focus:outline-none resize-none"
-            />
-            <button
-              onClick={send}
-              disabled={!canSend}
-              className="panel px-3 py-2 flex items-center justify-center disabled:opacity-50"
-              style={{ color: '#a78bfa', borderColor: '#a78bfa' }}
-            >
-              {sending ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}
-            </button>
-          </div>
-          <div className="font-mono text-[10px] text-slate-600 mt-1.5">{t('milo.attachHint')}</div>
-        </div>
+        {transcript}
+        {composer}
       </aside>
-    </div>
+    )
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        title={t('milo.openDock')}
+        className="fixed z-50 bottom-4 right-4 panel flex items-center gap-2 px-3 py-2.5"
+        style={{ color: '#a78bfa', borderColor: '#a78bfa' }}
+      >
+        <MessageSquare size={18} />
+        <span className="font-mono text-[12px]">{t('milo.talk')}</span>
+      </button>
+    )
+  }
+
+  return (
+    <aside
+      className="fixed z-50 bottom-4 right-4 w-[min(calc(100vw-2rem),640px)] h-[min(88vh,820px)] panel flex flex-col border-l-4"
+      style={{ borderColor: '#a78bfa' }}
+    >
+      <div className="flex items-center justify-between p-3 border-b-2 border-ink-700">
+        <div className="flex items-center gap-2 min-w-0">
+          <MessageSquare size={18} style={{ color: '#a78bfa' }} />
+          <h3 className="font-pixel text-[13px]" style={{ color: '#a78bfa' }}>{t('milo.title')}</h3>
+        </div>
+        {headerActions}
+      </div>
+      {transcript}
+      {composer}
+    </aside>
   )
 }
