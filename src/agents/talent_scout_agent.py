@@ -1021,7 +1021,10 @@ class JobDBManager:
                 continue
             cursor = self.db.execute(
                 """
-                SELECT id, match_score, recommendation_reason, company_name, job_title
+                SELECT id, match_score, recommendation_reason, company_name, job_title,
+                       hard_skill_match_score, transferability_score,
+                       matched_skills, missing_skills, transferable_strengths,
+                       job_url, career_advisory_note, location_mode, salary_range
                 FROM job_postings WHERE job_url = ?
                 """,
                 (candidate,),
@@ -1034,6 +1037,15 @@ class JobDBManager:
                     "recommendation_reason": row[2] or "",
                     "company_name": row[3] or "",
                     "job_title": row[4] or "",
+                    "hard_skill_match_score": row[5],
+                    "transferability_score": row[6],
+                    "matched_skills": row[7] or "",
+                    "missing_skills": row[8] or "",
+                    "transferable_strengths": row[9] or "",
+                    "job_url": row[10] or candidate,
+                    "career_advisory_note": row[11] or "",
+                    "location_mode": row[12] or "",
+                    "salary_range": row[13] or "",
                 }
         return None
 

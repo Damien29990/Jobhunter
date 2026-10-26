@@ -20,6 +20,44 @@ from application_followup import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "job_agent.db"
 
+_JOB_DETAIL_SELECT = """
+    SELECT id, company_name, job_title, application_status, job_url,
+           match_score, hard_skill_match_score, transferability_score,
+           matched_skills, missing_skills, transferable_strengths,
+           location_mode, salary_range, recommendation_reason,
+           career_advisory_note, application_note, employer_update_note,
+           application_status_at, application_ready, cv_status
+    FROM job_postings WHERE id = ?
+"""
+
+
+def job_detail_from_row(row: sqlite3.Row) -> dict:
+    """One job row as a Telegram/API detail dict. # Ref: job_postings"""
+    return {
+        "id": int(row["id"]),
+        "company_name": row["company_name"] or "",
+        "job_title": row["job_title"] or "",
+        "application_status": row["application_status"] or "READY",
+        "job_url": row["job_url"] or "",
+        "match_score": row["match_score"],
+        "hard_skill_match_score": row["hard_skill_match_score"],
+        "transferability_score": row["transferability_score"],
+        "matched_skills": row["matched_skills"] or "",
+        "missing_skills": row["missing_skills"] or "",
+        "transferable_strengths": row["transferable_strengths"] or "",
+        "location_mode": row["location_mode"] or "",
+        "salary_range": row["salary_range"] or "",
+        "recommendation_reason": row["recommendation_reason"] or "",
+        "career_advisory_note": row["career_advisory_note"] or "",
+        "application_note": row["application_note"] or "",
+        "employer_update_note": row["employer_update_note"] or "",
+        "application_status_at": row["application_status_at"] or "",
+        "application_ready": bool(row["application_ready"])
+        if row["application_ready"] is not None
+        else False,
+        "cv_status": row["cv_status"] or "",
+    }
+
 
 def apply_application_follow_up(
     job_id: int,
@@ -79,18 +117,8 @@ def apply_application_follow_up(
             params,
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT id, company_name, job_title, application_status, job_url "
-            "FROM job_postings WHERE id = ?",
-            (job_id,),
-        ).fetchone()
-        return {
-            "id": int(row["id"]),
-            "company_name": row["company_name"] or "",
-            "job_title": row["job_title"] or "",
-            "application_status": row["application_status"] or "",
-            "job_url": row["job_url"] or "",
-        }
+        row = conn.execute(_JOB_DETAIL_SELECT, (job_id,)).fetchone()
+        return job_detail_from_row(row)
     finally:
         conn.close()
 
@@ -132,22 +160,10 @@ def get_clara_job(job_id: int) -> Optional[dict]:
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     try:
-        row = conn.execute(
-            """
-            SELECT id, company_name, job_title, application_status, job_url
-            FROM job_postings WHERE id = ?
-            """,
-            (job_id,),
-        ).fetchone()
+        row = conn.execute(_JOB_DETAIL_SELECT, (job_id,)).fetchone()
         if row is None:
             return None
-        return {
-            "id": int(row["id"]),
-            "company_name": row["company_name"] or "",
-            "job_title": row["job_title"] or "",
-            "application_status": row["application_status"] or "READY",
-            "job_url": row["job_url"] or "",
-        }
+        return job_detail_from_row(row)
     finally:
         conn.close()
 

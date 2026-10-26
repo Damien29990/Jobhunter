@@ -120,6 +120,7 @@ def test_overview_lists_scores() -> None:
     assert "📊 1/1" in detail
     assert "#133" in detail
     assert "Match: 90/100" in detail
+    assert "Status: 🟢 READY" in detail
     assert "💼 Full Stack Web Developer" in detail
 
 

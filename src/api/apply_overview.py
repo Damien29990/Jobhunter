@@ -17,6 +17,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from application_followup import application_status_label
+
 HK_TZ = timezone(timedelta(hours=8))
 SESSION_TTL = timedelta(hours=2)
 MAX_JOBS = 80
@@ -215,22 +217,8 @@ def list_job_button_label(page_slot: int, score: object = None) -> str:
 
 
 def list_status_label(raw: object) -> str:
-    """READY / AWAITING / APPLIED (plus later Clara states).
-
-    # Ref: Telegram_Job_List_Template.md — Status Display
-    """
-    key = str(raw or "READY").strip().upper().replace("-", "_").replace(" ", "_")
-    marks = {
-        "READY": "🟢 READY",
-        "AWAITING": "🟡 AWAITING",
-        "APPLIED": "✅ APPLIED",
-        "EMPLOYER_UPDATE": "📬 EMPLOYER UPDATE",
-        "INTERVIEW": "🎤 INTERVIEW",
-        "OFFER": "🎉 OFFER",
-        "REJECTED": "🔴 REJECTED",
-        "WITHDRAWN": "⚪ WITHDRAWN",
-    }
-    return marks.get(key, f"⚪ {key or 'READY'}")
+    """Icon plus status token. # Ref: Telegram_Job_List_Template.md — Status Display"""
+    return application_status_label(None if raw is None else str(raw))
 
 
 def _skill_tags(raw: object) -> str:
@@ -546,7 +534,7 @@ def render_apply_page(session: ApplySession, jobs: Optional[list[dict]] = None) 
             f"💰 Salary: {_blank(job.get('salary_range'), 'Not disclosed')}",
             "",
             f"📄 CV: {_cv_label(job.get('cv_status'))}",
-            f"✅ Status: {str(job.get('application_status') or 'READY')}",
+            f"Status: {list_status_label(job.get('application_status'))}",
         ]
     )
     agent = _verdict_line(job.get("vetting_verdict"), job.get("dossier_confidence"))

@@ -52,6 +52,35 @@ def normalize_application_status(raw: Optional[str]) -> str:
     return STATUS_READY
 
 
+# Icon sits immediately before the status token in Telegram.
+# Ref: Telegram apply list / Clara job card — Status Display
+_STATUS_MARKS: dict[str, tuple[str, str]] = {
+    STATUS_READY: ("🟢", "READY"),
+    STATUS_AWAITING: ("🟡", "AWAITING"),
+    STATUS_APPLIED: ("✅", "APPLIED"),
+    STATUS_EMPLOYER_UPDATE: ("📬", "EMPLOYER UPDATE"),
+    STATUS_INTERVIEW: ("🎤", "INTERVIEW"),
+    STATUS_OFFER: ("🎉", "OFFER"),
+    STATUS_REJECTED: ("🔴", "REJECTED"),
+    STATUS_WITHDRAWN: ("⚪", "WITHDRAWN"),
+}
+
+
+def application_status_icon(raw: Optional[str]) -> str:
+    """Emoji for a Clara status. Unknown tokens use a hollow circle."""
+    key = str(raw or "").strip().upper().replace("-", "_").replace(" ", "_")
+    return _STATUS_MARKS.get(key, ("⚪", key or STATUS_READY))[0]
+
+
+def application_status_label(raw: Optional[str]) -> str:
+    """`🟢 READY` style label for Telegram. # Ref: application_status"""
+    key = str(raw or STATUS_READY).strip().upper().replace("-", "_").replace(" ", "_")
+    if not key:
+        key = STATUS_READY
+    icon, name = _STATUS_MARKS.get(key, ("⚪", key))
+    return f"{icon} {name}"
+
+
 def follow_up_needed(status: Optional[str], application_ready: bool | None) -> bool:
     """True when Clara's pack is ready and the user is still in an open stage."""
     if not application_ready:

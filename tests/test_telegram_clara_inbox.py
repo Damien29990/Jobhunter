@@ -15,11 +15,13 @@ for extra in (_API, _VALIDATORS):
 from telegram_inbox import (  # noqa: E402
     clear_rex_await,
     extract_http_url,
+    handle_parsed,
     parse_clara_text,
     rex_await_active,
     set_rex_await,
     start_rex_ingest,
 )
+from telegram_job_detail import format_job_telegram_detail, parse_skill_list  # noqa: E402
 from telegram_notifier import clara_status_keyboard  # noqa: E402
 
 
@@ -95,8 +97,64 @@ def test_start_rex_ingest_blocks_when_pipeline_running(monkeypatch) -> None:
     assert "already running" in text.lower()
 
 
+def test_job_detail_includes_matched_and_gaps() -> None:
+    text = format_job_telegram_detail(
+        {
+            "id": 742,
+            "company_name": "Acme Systems",
+            "job_title": "Full Stack Engineer",
+            "application_status": "READY",
+            "match_score": 72,
+            "hard_skill_match_score": 68,
+            "transferability_score": 76,
+            "matched_skills": ["Python", "React"],
+            "missing_skills": ["BACnet", "Workday"],
+            "suitable": False,
+            "job_url": "https://hk.jobsdb.com/job/1",
+        },
+        heading="Rex — Pasted job stored",
+    )
+    assert "#742" in text
+    assert "Status: 🟢 READY" in text
+    assert "suitable=false" in text
+    assert "Matched:" in text
+    assert "Python" in text
+    assert "Gaps:" in text
+    assert "BACnet" in text
+    assert parse_skill_list('["Python","React"]') == ["Python", "React"]
+
+
+def test_status_update_reply_is_full_job_card(monkeypatch) -> None:
+    detail = {
+        "id": 742,
+        "company_name": "Acme Systems",
+        "job_title": "Full Stack Engineer",
+        "application_status": "APPLIED",
+        "application_status_at": "2026-10-23T14:00:00+08:00",
+        "match_score": 72,
+        "matched_skills": ["Python"],
+        "missing_skills": ["Kubernetes"],
+        "job_url": "https://hk.jobsdb.com/job/1",
+    }
+    monkeypatch.setattr(
+        "telegram_inbox.apply_application_follow_up",
+        lambda job_id, **kwargs: detail,
+    )
+    reply = handle_parsed({"kind": "status", "job_id": 742, "status": "APPLIED"})
+    assert "Clara updated" in reply
+    assert "#742" in reply
+    assert "Status: ✅ APPLIED" in reply
+    assert "Matched:" in reply
+    assert "Gaps:" in reply
+    assert "Kubernetes" in reply
+
+
 def test_clara_callback_payload_fits_telegram() -> None:
     markup = clara_status_keyboard(12345)
+    labels = [btn["text"] for row in markup["inline_keyboard"] for btn in row]
+    assert "✅ Applied" in labels
+    assert "🟡 Await" in labels
+    assert "🔴 Reject" in labels
     for row in markup["inline_keyboard"]:
         for btn in row:
             data = btn.get("callback_data") or ""

@@ -12,6 +12,7 @@ if str(_VALIDATORS) not in sys.path:
 from application_followup import (
     STATUS_APPLIED,
     STATUS_READY,
+    application_status_label,
     default_status_when_pack_ready,
     follow_up_needed,
     normalize_application_status,
@@ -24,6 +25,14 @@ def test_applied_skips_listing_expiry() -> None:
     assert skip_listing_expiry_check("INTERVIEW") is True
     assert skip_listing_expiry_check("READY") is False
     assert skip_listing_expiry_check(None) is False
+
+
+def test_status_label_puts_icon_before_token() -> None:
+    assert application_status_label("READY") == "🟢 READY"
+    assert application_status_label("applied") == "✅ APPLIED"
+    assert application_status_label("INTERVIEW") == "🎤 INTERVIEW"
+    assert application_status_label("REJECTED") == "🔴 REJECTED"
+    assert application_status_label(None) == "🟢 READY"
 
 
 def test_normalize_unknown_is_ready() -> None:

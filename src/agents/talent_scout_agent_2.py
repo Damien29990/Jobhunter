@@ -918,6 +918,27 @@ Anonymized profile:
                 job_id = int(existing_state["id"])
                 print(f"ℹ️  URL already stored as job #{job_id} (score={score})")
                 log_activity("Rex", f"Pasted URL already in DB as #{job_id}")
+                notify_job_update(
+                    "Rex",
+                    "Pasted URL already stored",
+                    company=str(existing_state.get("company_name") or ""),
+                    title=str(existing_state.get("job_title") or ""),
+                    score=score,
+                    url=url,
+                    job_id=job_id,
+                    matched=existing_state.get("matched_skills")
+                    or existing_state.get("transferable_strengths"),
+                    gaps=existing_state.get("missing_skills"),
+                    hard=existing_state.get("hard_skill_match_score"),
+                    transfer=existing_state.get("transferability_score"),
+                    suitable=suitable,
+                    recommendation_reason=str(
+                        existing_state.get("recommendation_reason") or ""
+                    ),
+                    career_advisory_note=str(
+                        existing_state.get("career_advisory_note") or ""
+                    ),
+                )
                 return emit({
                     "ok": True,
                     "job_id": job_id,
@@ -1041,7 +1062,14 @@ Anonymized profile:
             title=stored_title,
             score=eval_res.composite_match_score,
             url=url,
-            extra=f"suitable={suitable}",
+            job_id=job_id,
+            matched=list(eval_res.transferable_strengths or []),
+            gaps=list(eval_res.bridging_gaps or []),
+            hard=eval_res.hard_skill_match_score,
+            transfer=eval_res.transferability_score,
+            suitable=suitable,
+            recommendation_reason=eval_res.recommendation_reason or "",
+            career_advisory_note=eval_res.career_advisory_note or "",
         )
         closed = self._keep_score_expire_linkedin(job_id, url, content)
         if closed:

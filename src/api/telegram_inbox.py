@@ -18,7 +18,11 @@ from typing import Optional
 import httpx
 from pydantic import BaseModel, Field
 
-from application_followup import APPLICATION_STATUSES, normalize_application_status
+from application_followup import (
+    APPLICATION_STATUSES,
+    application_status_label,
+    normalize_application_status,
+)
 
 try:
     from .clara_followup import (
@@ -265,7 +269,7 @@ def handle_parsed(cmd: dict) -> str:
         for row in rows:
             lines.append(
                 f"#{row['id']} {row['company_name']} — {row['job_title']} "
-                f"[{row['application_status']}]"
+                f"[{application_status_label(row.get('application_status'))}]"
             )
         lines.append("Tap a job: /clara <id>")
         return "\n".join(lines)
@@ -275,13 +279,14 @@ def handle_parsed(cmd: dict) -> str:
         if not job:
             return f"Job #{job_id} not found."
         extra = cmd.get("error")
-        head = (
-            f"#{job['id']} {job['company_name']} — {job['job_title']}\n"
-            f"Status: {job['application_status']}"
-        )
+        try:
+            from .telegram_job_detail import format_job_telegram_detail
+        except ImportError:
+            from telegram_job_detail import format_job_telegram_detail
+        body = format_job_telegram_detail(job)
         if extra:
-            return f"{head}\n{extra}\n{HELP}"
-        return head
+            return f"{body}\n\n{extra}\n{HELP}"
+        return body
     try:
         if kind == "status":
             job = apply_application_follow_up(
@@ -301,10 +306,11 @@ def handle_parsed(cmd: dict) -> str:
             return HELP
     except ValueError as exc:
         return str(exc)
-    return (
-        f"Clara updated #{job['id']} {job['company_name']} — {job['job_title']}\n"
-        f"Status: {job['application_status']}"
-    )
+    try:
+        from .telegram_job_detail import format_job_telegram_detail
+    except ImportError:
+        from telegram_job_detail import format_job_telegram_detail
+    return format_job_telegram_detail(job, heading="Clara updated")
 
 
 def _allowed_chat(chat_id: object) -> bool:

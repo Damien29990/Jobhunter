@@ -303,13 +303,15 @@ def send_agent_update(
 
 def clara_status_keyboard(job_id: int) -> dict:
     """Inline buttons to set Clara application_status from Telegram."""
+    from application_followup import application_status_icon
+
     labels = (
-        ("APPLIED", "Applied"),
-        ("AWAITING", "Await"),
-        ("INTERVIEW", "Interview"),
-        ("OFFER", "Offer"),
-        ("REJECTED", "Reject"),
-        ("WITHDRAWN", "Withdraw"),
+        ("APPLIED", f"{application_status_icon('APPLIED')} Applied"),
+        ("AWAITING", f"{application_status_icon('AWAITING')} Await"),
+        ("INTERVIEW", f"{application_status_icon('INTERVIEW')} Interview"),
+        ("OFFER", f"{application_status_icon('OFFER')} Offer"),
+        ("REJECTED", f"{application_status_icon('REJECTED')} Reject"),
+        ("WITHDRAWN", f"{application_status_icon('WITHDRAWN')} Withdraw"),
     )
     rows: list[list[dict]] = []
     chunk: list[dict] = []
@@ -337,6 +339,14 @@ def send_job_update(
     extra: str = "",
     person_tag: Optional[str] = None,
     job_id: Optional[int] = None,
+    matched: Optional[list[str]] = None,
+    gaps: Optional[list[str]] = None,
+    hard: Optional[int] = None,
+    transfer: Optional[int] = None,
+    suitable: Optional[bool] = None,
+    recommendation_reason: str = "",
+    career_advisory_note: str = "",
+    application_status: str = "",
 ) -> bool:
     """Notify when a single job row is created or updated.
 
@@ -345,19 +355,55 @@ def send_job_update(
     if not _is_configured():
         return False
     bits = [part for part in [_person_header(person_tag)] if part]
-    bits.append(f"📬 *{_escape_md(agent_name)}* — {_escape_md(event)}")
-    if company or title:
-        bits.append(
-            f"*{_escape_md(company or 'Employer')}* — {_escape_md(title or 'Role')}"
+    rich = bool(
+        matched
+        or gaps
+        or suitable is not None
+        or hard is not None
+        or transfer is not None
+        or recommendation_reason
+    )
+    if rich:
+        try:
+            from .telegram_job_detail import format_job_telegram_detail
+        except ImportError:
+            from telegram_job_detail import format_job_telegram_detail
+        card = format_job_telegram_detail(
+            {
+                "id": job_id,
+                "company_name": company,
+                "job_title": title,
+                "match_score": score,
+                "hard_skill_match_score": hard,
+                "transferability_score": transfer,
+                "matched_skills": matched or [],
+                "missing_skills": gaps or [],
+                "job_url": url,
+                "suitable": suitable,
+                "recommendation_reason": recommendation_reason,
+                "career_advisory_note": career_advisory_note,
+                "application_status": application_status or "READY",
+            },
+            heading=f"{agent_name} — {event}",
         )
-    if score is not None:
-        bits.append(_escape_md(f"Score: {score}"))
-    if extra:
-        bits.append(_escape_md(extra[:280]))
-    if url:
-        bits.append(_escape_md(url[:300]))
+        bits.append(card)
+    else:
+        bits.append(f"📬 *{_escape_md(agent_name)}* — {_escape_md(event)}")
+        if company or title:
+            bits.append(
+                f"*{_escape_md(company or 'Employer')}* — {_escape_md(title or 'Role')}"
+            )
+        if score is not None:
+            bits.append(_escape_md(f"Score: {score}"))
+        if extra:
+            bits.append(_escape_md(extra[:280]))
+        if url:
+            bits.append(_escape_md(url[:300]))
     markup = clara_status_keyboard(int(job_id)) if job_id is not None else _dashboard_button()
-    return _send_raw("\n".join(bits), markup)
+    body = "\n".join(bits)
+    if rich:
+        return _send_raw(_escape_md(body), markup)
+    return _send_raw(body, markup)
 
 
 def send_listing_sweep(

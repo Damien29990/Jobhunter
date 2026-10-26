@@ -30,6 +30,14 @@ def notify_job_update(
     url: str = "",
     extra: str = "",
     job_id: Optional[int] = None,
+    matched: Optional[list[str]] = None,
+    gaps: Optional[list[str]] = None,
+    hard: Optional[int] = None,
+    transfer: Optional[int] = None,
+    suitable: Optional[bool] = None,
+    recommendation_reason: str = "",
+    career_advisory_note: str = "",
+    application_status: str = "",
 ) -> bool:
     """Send one Telegram message for a single job-row update."""
     try:
@@ -45,6 +53,14 @@ def notify_job_update(
             url=url,
             extra=extra,
             job_id=job_id,
+            matched=matched,
+            gaps=gaps,
+            hard=hard,
+            transfer=transfer,
+            suitable=suitable,
+            recommendation_reason=recommendation_reason,
+            career_advisory_note=career_advisory_note,
+            application_status=application_status,
         )
         if not ok:
             from telegram_notifier import LAST_SEND_ERROR
